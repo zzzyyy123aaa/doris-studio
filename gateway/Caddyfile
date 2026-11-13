@@ -1,0 +1,22 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+
+	servers {
+		protocols h1
+	}
+}
+
+http://__DORIS_STUDIO_GATEWAY_IP__:4173 {
+	bind __DORIS_STUDIO_GATEWAY_IP__
+
+	basic_auth bcrypt "Doris Studio" {
+		import users.caddy
+	}
+
+	reverse_proxy http://127.0.0.1:4173 {
+		header_up Host 127.0.0.1:4173
+		header_up -Authorization
+	}
+}

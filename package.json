@@ -1,0 +1,13 @@
+{
+  "name": "doris-studio-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Apache Doris Studio with local demo and read-only Doris access",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check dist/app.js && node --check dist/alerts.js && node --check dist/data.js && node --check dist/monitoring-chart.js && node --check server.mjs && node --check server/doris-api.mjs && node --check server/data-sources.mjs && node --check server/cluster-status.mjs && node --check server/doris-client.mjs && node --check server/doris-metrics.mjs && node --check server/monitoring-history.mjs && node --check server/monitoring.mjs && node --check server/alert-store.mjs && node --check server/global-webhook-store.mjs && node --check server/alerts.mjs && node --check server/feishu-webhook.mjs && node --check server/sql-policy.mjs"
+  },
+  "dependencies": { "mysql2": "3.24.5" }
+}

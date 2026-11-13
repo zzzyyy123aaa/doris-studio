@@ -1,0 +1,11 @@
+**
+!package.json
+!pnpm-lock.yaml
+!server.mjs
+!server/
+!server/*.mjs
+!dist/
+!dist/*.html
+!dist/*.js
+!dist/*.css
+!dist/*.svg
