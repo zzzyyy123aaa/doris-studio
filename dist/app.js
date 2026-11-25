@@ -19,6 +19,7 @@ const live = {
   enabled: false,
   checking: false,
   connected: false,
+  retryable: true,
   checkRequest: null,
   queryRequest: null,
   database: '',
@@ -51,6 +52,8 @@ let sourcesRevision = 0;
 let initialized = false;
 let tableSearch = '';
 let monitoringTimer;
+let connectionRetryTimer = null;
+const connectionRetryDelay = 15_000;
 const visibleNav = () => nav.filter(([route]) => route !== (live.enabled ? 'tasks' : 'alerts'));
 const currentTables = () => live.enabled ? live.tables : tables;
 const currentDatabases = () => live.enabled ? live.databases : demoDatabases;
@@ -174,6 +177,7 @@ async function switchConnection(id, {dismiss = true} = {}) {
   resetAlerts();
   live.activeConnectionId = source.id;
   live.connected = false;
+  live.retryable = true;
   live.database = '';
   live.version = '';
   live.databases = [];
@@ -186,12 +190,13 @@ async function switchConnection(id, {dismiss = true} = {}) {
   await checkConnection();
 }
 
-async function checkConnection() {
+async function checkConnection({automatic = false} = {}) {
   if (live.checkRequest) return;
   const request = new AbortController();
   live.checkRequest = request;
   live.checking = true;
-  live.error = '';
+  syncConnectionRetry();
+  if (!automatic) live.error = '';
   live.catalogError = '';
   live.catalogLoaded = false;
   live.detail?.controller.abort();
@@ -203,10 +208,13 @@ async function checkConnection() {
   live.monitoring = null;
   live.monitoringRange = '';
   live.monitoringError = '';
-  if (initialized) layout();
+  if (initialized) {
+    if (automatic) refreshConnectionUi();
+    else layout();
+  }
 
   try {
-    const options = {signal: request.signal, timeout: 12000};
+    const options = {signal: request.signal, timeout: 20000};
     if (live.enabled && !live.connectionsLoaded) await loadConnections();
     if (live.checkRequest !== request) return;
     let status = await fetchApi('status', options);
@@ -227,20 +235,23 @@ async function checkConnection() {
     }
     if (!live.activeConnectionId && typeof status.sourceId === 'string') live.activeConnectionId = status.sourceId;
     live.connected = status.connected === true;
+    live.retryable = status.retryable !== false;
     live.database = typeof status.database === 'string' ? status.database : '';
     live.version = typeof status.version === 'string' ? status.version : '';
     if (!live.connected) {
       live.error = status.error || 'Doris 连接未建立，请检查服务配置。';
       return;
     }
+    live.error = '';
     initialized = true;
     state.route = routeFromHash();
-    layout();
+    if (!automatic) layout();
     await loadCatalog(request);
   } catch (error) {
     if (live.checkRequest !== request) return;
     enableLive();
     live.connected = false;
+    live.retryable = true;
     live.error = describeError(error);
   } finally {
     if (live.checkRequest === request) {
@@ -252,8 +263,68 @@ async function checkConnection() {
         live.tables = [];
       }
       state.route = routeFromHash();
-      layout();
+      if (automatic) refreshConnectionUi();
+      else layout();
       resetRefresh();
+      syncConnectionRetry();
+    }
+  }
+}
+
+function syncConnectionRetry() {
+  const hasSource = Boolean(live.activeConnectionId) || !live.connectionsLoaded;
+  const eligible = initialized && live.enabled && !live.connected && live.retryable && hasSource
+    && !live.checkRequest && document.visibilityState !== 'hidden';
+  if (!eligible) {
+    clearTimeout(connectionRetryTimer);
+    connectionRetryTimer = null;
+    return;
+  }
+  if (connectionRetryTimer !== null) return;
+  const sourceId = live.activeConnectionId;
+  connectionRetryTimer = setTimeout(() => {
+    connectionRetryTimer = null;
+    if (sourceId === live.activeConnectionId && !live.checkRequest && !live.connected && document.visibilityState !== 'hidden') {
+      checkConnection({automatic:true});
+    }
+  }, connectionRetryDelay);
+}
+
+function refreshConnectionUi() {
+  const sidebarStatus = document.querySelector('[data-connection-summary]');
+  if (sidebarStatus) sidebarStatus.innerHTML = `<i class="dot ${live.connected?'green':'red'}"></i> ${connectionLabel()}`;
+  const currentCard = document.getElementById('live-connection-card');
+  if (currentCard) currentCard.outerHTML = liveConnectionCard();
+  const notice = document.getElementById('live-connection-notice');
+  if (notice) notice.innerHTML = connectionFailureNotice();
+  for (const control of document.querySelectorAll('[data-action="check-connection"]')) {
+    control.disabled = live.checking;
+    const isRetry = control.closest('#live-connection-notice');
+    control.innerHTML = `${icon('refresh')}${live.checking?'检查中…':isRetry?'立即重试':'测试连接'}`;
+  }
+  if (live.connected && state.route === 'overview') {
+    refreshMain();
+    loadCluster();
+    syncMonitoring();
+  }
+  if (live.connected && ['sql','data'].includes(state.route)) {
+    const treeElement = document.getElementById('table-tree');
+    if (treeElement) treeElement.innerHTML = tree(tableSearch);
+    const resourceCount = document.getElementById('resource-database-count');
+    if (resourceCount) resourceCount.textContent = `${currentDatabases().length} DB`;
+    if (state.route === 'data') {
+      const queryAction = document.getElementById('live-data-query-action');
+      if (queryAction) queryAction.innerHTML = selectedTable() && live.catalogLoaded ? button('table-sql','查询此表','code','primary') : '';
+      const detail = document.getElementById('live-table-detail');
+      if (detail) detail.innerHTML = renderLiveDetail();
+      loadLiveDetail();
+    } else {
+      const databasePicker = document.getElementById('sql-db');
+      if (databasePicker) databasePicker.innerHTML = databaseOptions();
+      const run = document.querySelector('[data-action="run"]');
+      if (run) run.outerHTML = runButton();
+      const warning = document.getElementById('sql-connection-warning');
+      if (warning) warning.innerHTML = '';
     }
   }
 }
@@ -302,7 +373,7 @@ document.title=`${title} · Doris Studio`;
 document.getElementById('app').innerHTML=`
 <aside class="sidebar" id="sidebar">
  <a href="#/overview" class="brand" aria-label="Doris Studio 首页"><img class="brand-mark" src="./favicon.svg" alt=""><div><div class="brand-name">doris<span style="font-weight:500;color:#8e86a0"> studio</span></div><div class="brand-sub">YOUR DATA, IN FOCUS</div></div></a>
- <button class="cluster-switch" data-action="cluster" aria-haspopup="dialog"${live.enabled?' aria-label="切换 Doris 连接"':''}><span class="cluster-symbol">${icon('database')}</span><span class="cluster-switch-copy"><strong id="active-connection-label" title="${esc(clusterName())}">${esc(clusterName())}</strong><small><i class="dot ${live.enabled && !live.connected ? 'red' : 'green'}"></i> ${live.enabled ? connectionLabel() : `${state.cluster==='production'?'生产环境':'开发环境'} · 演示集群`}</small></span>${icon('down')}</button>
+ <button class="cluster-switch" data-action="cluster" aria-haspopup="dialog"${live.enabled?' aria-label="切换 Doris 连接"':''}><span class="cluster-symbol">${icon('database')}</span><span class="cluster-switch-copy"><strong id="active-connection-label" title="${esc(clusterName())}">${esc(clusterName())}</strong><small data-connection-summary><i class="dot ${live.enabled && !live.connected ? 'red' : 'green'}"></i> ${live.enabled ? connectionLabel() : `${state.cluster==='production'?'生产环境':'开发环境'} · 演示集群`}</small></span>${icon('down')}</button>
  <div class="nav-label">WORKSPACE</div>
  <nav aria-label="工作空间导航">${links.slice(0,4).map(([r,i,t])=>routeLink(r,`${icon(i)}<span>${t}</span>`, `nav-item ${state.route===r?'active':''}`)).join('')}</nav>
  <div class="nav-label second">MANAGEMENT</div>
@@ -321,6 +392,7 @@ if(state.route==='data') loadLiveDetail();
 if(state.route==='overview') loadCluster();
 else cancelClusterRequest();
 syncMonitoring();
+syncConnectionRetry();
 if (state.route === 'alerts') {
   if (webhookPanel) document.getElementById('alert-webhook-content')?.replaceWith?.(webhookPanel);
   webhookFocus?.focus({preventScroll:true});
@@ -347,6 +419,7 @@ function connectionButton() {
 
 function liveOverview() {
   return `${heading('DORIS CONNECTION', '集群概览', '检查 Doris 连接、节点状态和可访问的库表。', `${connectionButton()}${routeLink('sql', icon('code')+'<span>SQL 工作台</span>', 'button primary')}`)}
+    <div id="live-connection-notice" aria-live="polite">${connectionFailureNotice()}</div>
     <section id="live-monitoring" aria-label="集群监控">${renderMonitoring()}</section>
     <div class="settings-grid">
       ${liveConnectionCard()}
@@ -362,9 +435,16 @@ function liveOverview() {
     <section class="live-nodes" id="live-nodes" aria-label="集群节点">${renderCluster()}</section>`;
 }
 
+function connectionFailureNotice() {
+  if (live.connected || !live.error) return '';
+  const retry = live.retryable ? '页面可见时每 15 秒自动重试。' : '请检查数据源配置后重试。';
+  return `<div class="error-box" role="status"><p>${esc(live.error)}</p><p>${retry}可检查 FE 地址、查询端口或切换数据源。</p>
+    ${button('check-connection',live.checking?'正在重试…':'立即重试','refresh','small',live.checking)} ${routeLink('settings','数据源管理 '+icon('arrow'),'text-button')}</div>`;
+}
+
 function liveConnectionCard() {
   const tone = live.checking ? 'purple' : live.connected ? 'green' : 'red';
-  return `<section class="card"><div class="card-head"><h2>当前连接</h2>${tag(connectionLabel(), tone)}</div>
+  return `<section class="card" id="live-connection-card"><div class="card-head"><h2>当前连接</h2>${tag(connectionLabel(), tone)}</div>
     <div class="settings-body">
       <div class="settings-row"><strong>数据来源</strong><span class="sub connection-current-name" id="current-connection-label">${esc(activeConnection()?.name || (live.activeConnectionId ? 'Doris 内网连接' : '未选择连接'))}</span></div>
       <div class="settings-row"><strong>默认数据库</strong><span class="sub">${esc(live.database || '未指定')}</span></div>
@@ -798,7 +878,7 @@ function chart(){
 }
 function explorer() {
   const count = currentDatabases().length;
-  return `<aside class="card explorer"><div class="explorer-heading between"><span>数据资源</span><span class="tag">${count} DB</span></div>
+  return `<aside class="card explorer"><div class="explorer-heading between"><span>数据资源</span><span class="tag" id="resource-database-count">${count} DB</span></div>
     <div class="search-box"><input class="input" type="search" id="table-search" placeholder="搜索表名称…" aria-label="搜索表" value="${esc(tableSearch)}"></div>
     <div id="table-tree">${tree(tableSearch)}</div></aside>`;
 }
@@ -833,25 +913,29 @@ function runButton() {
   return button('run', state.running ? '运行中…' : '运行查询', state.running ? 'refresh' : 'play', 'primary', state.running || (live.enabled && !live.connected));
 }
 
-function sqlPage() {
+function databaseOptions() {
   const databaseNames = currentDatabases();
   const databases = databaseNames.map(db => `<option value="${esc(db)}" ${state.db===db?'selected':''}>${esc(db)}</option>`);
   if (live.enabled) {
     if (state.db && !databaseNames.includes(state.db)) databases.unshift(`<option value="${esc(state.db)}" selected>${esc(state.db)}（未在列表中）</option>`);
     databases.unshift(`<option value="" ${state.db?'':'selected'}>${live.database?'使用服务端默认库':'不指定数据库'}</option>`);
   }
+  return databases.join('');
+}
+
+function sqlPage() {
   const connectionNotice = live.enabled && !live.connected ? `<div class="notice-strip" role="alert">${esc(live.error || '正在检查连接。')} ${connectionButton()}</div>` : '';
   const description = live.enabled ? '在 Doris 执行单条只读查询。新集群可运行 SELECT 1; 验证连接。' : '支持 SELECT、WHERE、ORDER BY、LIMIT、COUNT(*)、SHOW 和 DESC。所有查询在浏览器内执行，仅作用于示例数据。';
 
   return `${heading('SQL WORKSPACE','SQL 工作台','编辑、执行并导出查询结果。',button('saved','已保存查询','folder'))}
     <div class="workspace">${explorer()}<section>
       <div class="card"><div class="editor-head"><div class="editor-tabs"><div class="editor-tab">${icon('code')}查询 01 <span class="dot purple" title="当前查询"></span></div></div><button class="text-button" data-action="new-query">${icon('plus')}新建</button></div>
-        <div class="editor-toolbar"><select class="select" id="sql-db" aria-label="查询数据库">${databases.join('')}</select>${runButton()}<span class="muted" style="font-size:9px">Ctrl ↵</span><div style="flex:1"></div>${live.enabled?'':button('format','格式化','code','small quiet')}${button('save-query','保存','save','small quiet')}</div>
+        <div class="editor-toolbar"><select class="select" id="sql-db" aria-label="查询数据库">${databaseOptions()}</select>${runButton()}<span class="muted" style="font-size:9px">Ctrl ↵</span><div style="flex:1"></div>${live.enabled?'':button('format','格式化','code','small quiet')}${button('save-query','保存','save','small quiet')}</div>
         <div class="editor-area"><div class="line-numbers" id="line-numbers" aria-hidden="true"></div><textarea class="sql-textarea" id="sql-editor" aria-label="SQL 编辑器" spellcheck="false" autocapitalize="off">${esc(state.sql)}</textarea></div>
         <div class="editor-status"><span>${icon('database')} <span id="editor-connection-label">${esc(clusterName())}</span> <span style="margin:0 7px">/</span> ${esc(state.db || live.database || '未选数据库')}</span><span>${live.enabled?'只读查询':'演示引擎 · 查询基于有限样本数据'}</span></div>
       </div>
       <div class="card results" id="results" aria-live="polite">${resultPanel()}</div>
-      ${connectionNotice}<div class="notice-strip">${icon('info')} ${description}</div>
+      <div id="sql-connection-warning">${connectionNotice}</div><div class="notice-strip">${icon('info')} ${description}</div>
     </section></div>`;
 }
 
@@ -878,7 +962,7 @@ function dataTable(columns,rows){return`<div class="table-scroll"><table class="
 function dataPage(){const t=tables.find(t=>`${t.db}.${t.name}`===state.table)||tables[0];return`${heading('DATA EXPLORER','数据管理','从全局到细节，轻松浏览你的数据资产。',`${button('table-sql','查询此表','code','primary')}`)}<div class="workspace">${explorer()}<section class="card"><div class="table-detail-head">${icon('table')}<div><h2>${t.name}</h2><p>${t.db} <span style="padding:0 5px">/</span> ${t.label} <span style="padding:0 5px">·</span> ${t.model}</p></div><span class="tag green" style="margin-left:auto">可用</span></div><div class="detail-stats"><div><span>示例总行数</span><strong class="num">${t.total}</strong></div><div><span>示例存储量</span><strong class="num">${t.size}</strong></div><div><span>字段数量</span><strong class="num">${t.columns.length}</strong></div><div><span>副本数</span><strong class="num">3</strong></div></div><div class="tabs">${[['preview','数据预览'],['schema','表结构'],['ddl','建表语句']].map(([v,l])=>`<button data-detail="${v}" class="${state.detailTab===v?'active':''}">${l}</button>`).join('')}</div>${state.detailTab==='preview'?`<div class="filter-bar"><span class="sub" style="font-size:10px;align-self:center">显示 ${Math.min(Number(state.settings.pageSize),t.rows.length)} 条内置样本</span>${button('export-table','导出样本','download','small')}</div>${dataTable(t.columns.map(c=>c.name),t.rows.slice(0,Number(state.settings.pageSize)))}<div class="table-foot"><span>仅预览内置示例数据，非完整数据集</span></div>`:state.detailTab==='schema'?`<div class="table-scroll"><table class="data-table"><thead><tr><th>字段名称</th><th>类型</th><th>键列</th><th>说明</th></tr></thead><tbody>${t.columns.map(c=>`<tr><td class="mono">${esc(c.name)}</td><td><span class="tag purple">${esc(c.type)}</span></td><td>${c.key?icon('key'):'—'}</td><td>${esc(c.comment)}</td></tr>`).join('')}</tbody></table></div>`:`<div class="between" style="padding:14px 20px 0"><span class="muted" style="font-size:9px">示意 DDL · 请按实际 Doris 版本确认</span>${button('copy-ddl','复制','copy','small quiet')}</div><pre class="ddl">${esc(ddl(t))}</pre>`}</section></div>`}
 function liveDataPage() {
   const queryTableButton = selectedTable() && live.catalogLoaded ? button('table-sql', '查询此表', 'code', 'primary') : '';
-  return `${heading('DATA EXPLORER','数据管理','浏览当前账号可访问的库表。',queryTableButton)}
+  return `${heading('DATA EXPLORER','数据管理','浏览当前账号可访问的库表。',`<span id="live-data-query-action">${queryTableButton}</span>`)}
     <div class="workspace">${explorer()}<section class="card" id="live-table-detail" aria-live="polite">${renderLiveDetail()}</section></div>`;
 }
 
@@ -1247,6 +1331,7 @@ function openConnectionForm(source) {
       <label class="field"><span>用户名</span><input class="input" name="username" maxlength="128" required></label>
       <label class="field"><span>密码</span><input class="input" name="password" type="password" autocomplete="new-password" maxlength="1024"></label>
     </div>
+    <label class="field"><span>备用 FE 地址（可选）</span><input class="input" name="feEndpoints" placeholder="fe-a:9030,fe-b:9030" maxlength="4096"><small>仅填写同一 Doris 集群的 FE 查询地址，用逗号分隔。</small></label>
     <label class="field"><span>默认数据库（可选）</span><input class="input" name="database" maxlength="128"></label>
     <label class="connection-tls"><input type="checkbox" name="tls"> 启用 Doris SQL TLS</label>`;
   const form = `<form id="connection-form" method="post" autocomplete="off"${isRename?` data-connection-id="${esc(source.id)}"`:''}>
@@ -1269,6 +1354,7 @@ async function submitConnection(form) {
     name, host:text('host'), port:Number(text('port')), username:text('username'),
     password:String(fields.get('password') ?? ''), database:text('database'), tls:fields.has('tls'),
   };
+  if (!id && text('feEndpoints')) body.feEndpoints = text('feEndpoints');
   const submit = document.querySelector('button[form="connection-form"]');
   const caption = submit?.querySelector('span');
   live.connectionMutation = true;
@@ -1569,6 +1655,7 @@ document.addEventListener('keydown',e=>{
  if(e.key==='Tab'&&e.target.id==='sql-editor'){e.preventDefault();const input=e.target;input.setRangeText('  ',input.selectionStart,input.selectionEnd,'end');state.sql=input.value;if(!live.enabled)write('sql',state.sql);updateLines()}
 });
 window.addEventListener('hashchange',()=>{if(!initialized)return;state.route=routeFromHash();layout();window.scrollTo(0,0)});
+document.addEventListener('visibilitychange', syncConnectionRetry);
 
 if (document.querySelector('meta[name="doris-mode"][content="live"]')) enableLive();
 document.getElementById('app').innerHTML = '<main class="empty" role="status">正在检查 Doris 连接…</main>';

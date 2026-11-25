@@ -14,6 +14,10 @@ export function publicError(error) {
     case 'EHOSTUNREACH':
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
+    case 'ECONNRESET':
+    case 'EPIPE':
+    case 'PROTOCOL_CONNECTION_LOST':
+    case 'ER_SERVER_SHUTDOWN':
       return new ApiError(503, '无法连接 Doris FE，请检查地址、查询端口和内网连通性。');
     case 'ETIMEDOUT':
     case 'PROTOCOL_SEQUENCE_TIMEOUT':

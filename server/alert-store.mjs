@@ -127,18 +127,20 @@ function parseRuntime(input) {
   const rules = {};
   for (const [key, rule] of Object.entries(input.rules)) {
     if (!Object.hasOwn(thresholdsByDefault, key) || !object(rule)) throw new Error('Invalid alert rule state');
-    const { streak, activeSince, notified, lastSentAt, pendingRecovery, scope, destination } = rule;
+    const { streak, activeSince, notified, lastSentAt, pendingRecovery, scope, destination, metricSource } = rule;
     if (!Number.isSafeInteger(streak) || streak < 0
       || (activeSince !== null && !validDate(activeSince))
       || typeof notified !== 'boolean'
       || (lastSentAt !== null && (!Number.isSafeInteger(lastSentAt) || lastSentAt < 0))
       || (scope !== undefined && scope !== 'cluster' && scope !== 'connected-fe')
+      || (metricSource !== undefined && (typeof metricSource !== 'string' || metricSource.length > 512 || /[\p{Cc}\p{Cs}]/u.test(metricSource)))
       || (destination !== undefined && destination !== null
         && (typeof destination !== 'string' || !/^[a-f0-9]{64}$/.test(destination)))
       || typeof pendingRecovery !== 'boolean') {
       throw new Error('Invalid alert rule state');
     }
-    rules[key] = { streak, activeSince, notified, lastSentAt, pendingRecovery, ...(scope ? { scope } : {}), ...(destination !== undefined ? { destination } : {}) };
+    rules[key] = { streak, activeSince, notified, lastSentAt, pendingRecovery, ...(scope ? { scope } : {}),
+      ...(destination !== undefined ? { destination } : {}), ...(metricSource !== undefined ? { metricSource } : {}) };
   }
   let lastDelivery = null;
   if (input.lastDelivery !== null) {

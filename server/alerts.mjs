@@ -122,8 +122,12 @@ export function createAlerts(store, { channel, listSourceIds, send = sendFeishuW
       }
       state.destination = destination;
       if (Number.isFinite(value) && feRules.has(key)) {
-        if (state.scope && state.scope !== snapshot.metricScope) Object.assign(state, initialRule());
+        const sourceChanged = snapshot.metricScope === 'connected-fe' && state.scope === 'connected-fe'
+          && state.metricSource !== snapshot.metricSource;
+        if (sourceChanged || (state.scope && state.scope !== snapshot.metricScope)) Object.assign(state, initialRule());
         state.scope = snapshot.metricScope;
+        if (snapshot.metricScope === 'connected-fe' && snapshot.metricSource) state.metricSource = snapshot.metricSource;
+        else delete state.metricSource;
       }
       if (!contiguous && !state.activeSince) state.streak = 0;
       if (!Number.isFinite(value)) {

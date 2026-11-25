@@ -292,6 +292,7 @@ export function createMonitoring({ getTopology, directory, clusterKey, onSample,
     const { current, coverage, qpsComplete, latencyComplete, latencyCount } = summary;
     snapshot = {
       sampledAt: new Date(at).toISOString(), current, coverage, metricScope,
+      ...(metricScope === 'connected-fe' ? { metricSource: topology.metricSource } : {}),
       beMetrics: legacyBeStatus(topology.backends, summary, [...previous.values()].some(({ type }) => type === 'be'), ambiguousHosts),
       health: { fe: groupHealth(topology.frontends), be: groupHealth(topology.backends) },
       ...describeSample(topology, summary, Boolean(previous.size)),

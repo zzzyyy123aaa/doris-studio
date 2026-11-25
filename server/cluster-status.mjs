@@ -70,7 +70,7 @@ async function readNodes(client, type, sql, formatNode) {
       await run("SET SESSION time_zone = 'Asia/Shanghai'", queryOptions);
       readingNodes = true;
       return run(sql, queryOptions);
-    }, undefined, { discardAfterUse: true });
+    }, undefined, { discardAfterUse: true, retryTimeout: true });
     if (result.truncated) throw new ApiError(422, '节点信息超过显示上限。');
     const columns = new Set(result.columns.map((name) => name.toLowerCase()));
     if (!columns.has('host') || !columns.has('alive')) {
@@ -125,9 +125,11 @@ export async function readClusterStatus(client, { host, request = fetch, include
     readNodes(client, 'FE', 'SHOW FRONTENDS', frontend),
     readNodes(client, 'BE', 'SHOW BACKENDS', backend),
   ]);
+  if (!frontends.error) client.rememberFrontends?.(frontends.nodes);
   const feDenied = frontends.code === 'legacy-permission';
   const beDenied = backends.code === 'legacy-permission';
-  const base = host && (feDenied || beDenied) ? metricsUrl({ host, httpPort: 8030 }) : null;
+  const connectedHost = client.endpoint?.host ?? host;
+  const base = connectedHost && (feDenied || beDenied) ? metricsUrl({ host: connectedHost, httpPort: 8030 }) : null;
   let feMetrics;
   if (base) {
     const [metrics, health] = await Promise.all([readLegacyFe(base, request), beDenied ? readBackendHealth(base, request) : null]);
@@ -146,5 +148,6 @@ export async function readClusterStatus(client, { host, request = fetch, include
       }
     }
   }
-  return { sampledAt: new Date().toISOString(), frontends, backends, ...(feMetrics ? { feMetrics } : {}) };
+  return { sampledAt: new Date().toISOString(), frontends, backends,
+    ...(feMetrics ? { feMetrics, metricSource: JSON.stringify(client.endpoint ?? { host: connectedHost, port: 9030 }) } : {}) };
 }

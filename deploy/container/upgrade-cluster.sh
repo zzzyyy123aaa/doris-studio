@@ -50,8 +50,9 @@ async function json(path, limit) {
 (async () => {
   while (Date.now() < deadline) {
     try {
-      const status = await json('/api/status', 12_000);
-      if (status?.mode !== 'live' || status.connected !== true) throw new Error('status');
+      const status = await json('/api/status', 20_000);
+      if (status?.mode !== 'live' || typeof status.connected !== 'boolean') throw new Error('status');
+      if (process.argv[2] !== 'reachable' && status.connected !== true) throw new Error('disconnected');
       if (process.argv[2] === 'monitoring') {
         const cluster = await json('/api/cluster', 25_000);
         if (!cluster || typeof cluster.sampledAt !== 'string' || !cluster.sampledAt ||
@@ -115,7 +116,7 @@ case "$old_restart" in
     if [[ $old_retry_count != 0 ]]; then old_restart="on-failure:$old_retry_count"; fi ;;
   *) die '无法确认现有重启策略。' ;;
 esac
-probe "$old_id" status 20 || die '现有容器的 /api/status 未确认已连接 Doris。'
+probe "$old_id" reachable 20 || die '现有容器的 /api/status 未返回有效的内网版连接状态。'
 
 original_tag=$(image_id "$image" || true)
 upgrade_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -171,12 +172,7 @@ load_output=$(docker_local image load --quiet --input "$archive" 2>/dev/null) ||
 grep -Fxq "Loaded image: $image" <<< "$load_output" || die '离线镜像包不包含 doris-studio:1.0.0。'
 loaded_image=$(image_id "$image") || die '导入后找不到预期镜像标签。'
 [[ $loaded_image =~ ^sha256:[a-f0-9]{64}$ ]] || die '无法确认新镜像 ID。'
-if [[ $loaded_image == "$old_image" && $old_mounts == 1 ]]; then
-  probe "$old_id" monitoring 30 || die '运行容器已使用包中的镜像，但服务接口未通过检查。'
-  committed=1
-  printf '当前监控镜像已部署，服务检查通过。\n'
-  exit 0
-fi
+# Recreate even with the same image so edits to the supplied .env take effect.
 [[ $(docker_local image inspect --format '{{.Os}}/{{.Architecture}}' "$loaded_image" 2>/dev/null) == linux/amd64 ]] ||
   die '离线镜像平台须为 linux/amd64。'
 quiet_docker run --rm --pull=never --network none --read-only --cap-drop=ALL \

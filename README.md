@@ -105,13 +105,34 @@ ssh -N -L 4173:127.0.0.1:4173 user@studio-server.example.internal
 
 ### 升级和回滚
 
-按上文从新源码构建并导出 `doris-studio:1.0.0`，把镜像 tar 传到部署服务器。升级脚本适用于正在运行、已连通 Doris、采用标准容器名称和主机网络的部署。它复用现有 `.env` 和 `doris-studio-monitoring` 卷。如果已有额外挂载，例如私有 CA 证书，请按原容器配置手动替换。建议升级前按现有运维流程备份 `.env` 和数据卷，备份按凭据文件保管。
+升级脚本适用于正在运行、状态接口可访问、采用标准容器名称和主机网络的部署。它复用现有 `.env` 和 `doris-studio-monitoring` 卷。默认 FE 离线、页面显示连接失败时，也可执行这个升级流程。建议升级前按现有运维流程备份 `.env` 和数据卷，备份按凭据文件保管。如果已有额外挂载，例如私有 CA 证书，请按原容器配置手动替换。
+
+先编辑部署服务器上的现有 `.env`，保留 `DORIS_HOST` 和 `DORIS_PORT`，将同一 Doris 集群中仍可访问的其他 FE 查询地址填入 `DORIS_FE_ENDPOINTS`。使用实际主机名替换示例。
+
+```dotenv
+DORIS_FE_ENDPOINTS=fe02.example.internal:9030,fe03.example.internal:9030
+```
+
+在构建机上从最新源码构建并导出镜像，把生成的 tar 和新版升级脚本传到部署服务器。
+
+```sh
+docker build --platform linux/amd64 -t doris-studio:1.0.0 .
+docker save -o doris-studio-linux-amd64.tar doris-studio:1.0.0
+```
+
+在部署服务器执行以下命令。升级会重新创建应用容器并加载编辑后的 `.env`，执行 `docker restart` 会继续使用容器创建时的环境变量。
 
 ```sh
 sudo bash deploy/container/upgrade-cluster.sh /path/to/deployment/.env /path/to/doris-studio-linux-amd64.tar
 ```
 
-脚本会导入镜像，预检数据卷并短暂停机切换容器。应用接口检查失败时会尝试恢复原容器。成功后，脚本会打印保留的旧容器名，其状态为已停止，自动重启已关闭。网关继续使用原来的回环上游。
+脚本会导入镜像，预检数据卷并短暂停机切换容器。升级前检查允许 Doris 暂时断连，升级后仍要求新容器连通 Doris，并通过监控、数据源和告警接口检查。失败时会尝试恢复原容器。成功后，脚本会打印保留的旧容器名，其状态为已停止，自动重启已关闭。网关继续使用原来的回环上游。
+
+```sh
+curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
+```
+
+看到 `"connected":true` 后，浏览器会恢复读取数据。连接失败期间，页面约每 15 秒重试。
 
 若需在升级成功后回滚，先确认旧容器和共享数据卷可用。输入升级脚本打印的旧容器名，并确保下面用于保留新版容器的名称尚未使用。以下命令恢复旧容器及标准重启策略。
 
@@ -141,6 +162,7 @@ curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
 | --- | --- |
 | `DORIS_HOST` | 默认数据源的 Doris FE 地址，填写内网 IP 或主机名 |
 | `DORIS_PORT` | FE MySQL 查询端口，默认 `9030` |
+| `DORIS_FE_ENDPOINTS` | 可选，同一集群的其他 FE 查询地址，以逗号分隔，最多 8 个。每项使用 `host:port`，IPv6 使用 `[地址]:port` |
 | `DORIS_USER` | Doris 只读账号 |
 | `DORIS_PASSWORD` | 该账号的密码，Docker `--env-file` 中按原值填写 |
 | `DORIS_DATABASE` | 默认业务库，新集群可留空 |
@@ -150,6 +172,8 @@ curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
 | `STUDIO_MONITORING_DIR` | 数据目录。Docker 标准部署使用 `/app/monitoring-data`，直接运行 Node 时可指定绝对路径 |
 
 `.env` 中的连接作为默认数据源。「数据源管理」可添加、切换和重命名连接。新增时会验证 Doris 连接，重命名只改变显示名称。访问同一部署的浏览器共享服务端连接和权限，各浏览器独立记住所选数据源。标准容器部署将新增连接保存到数据卷的 `sources/sources.json`，飞书配置保存到 `alerts/webhook.json`，文件权限均为 `0600`。请将数据卷及其备份按凭据文件管理。
+
+同一数据源的 FE 切换共用 Doris 账号、默认库和 TLS 配置，备用地址应指向同一集群，并允许该账号登录。已有单 FE 配置可继续使用。成功读取节点拓扑后，服务会在内存中记住已加入集群且在线的其他 FE，遇到连接故障时尝试备用地址。为在主地址离线时启动或重启，需显式保存备用地址。Doris 2.1 等版本的只读账号无法读取 FE 拓扑时，也需显式配置。FE 切换沿用原数据源及其监控历史。
 
 也可直接在 Linux 上运行内网版。可以使用与容器一致的 Node.js 22.23.4 和 pnpm 11.25.0。创建 `.env` 后执行以下命令。为保留监控历史，请设置 `STUDIO_MONITORING_DIR` 指向运行账号可写的目录。 [pnpm 安装文档](https://pnpm.io/installation)
 
@@ -181,6 +205,7 @@ node server.mjs
 
 ```sh
 node --run check
+node --run test
 bash -n gateway/start.sh
 bash -n deploy/container/upgrade-cluster.sh
 ```

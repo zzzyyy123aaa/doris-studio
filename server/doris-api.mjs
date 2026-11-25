@@ -2,6 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { resolve } from 'node:path';
 import { ApiError, publicError } from './errors.mjs';
 import { createDorisClient } from './doris-client.mjs';
+import { parseFeHost, parseFeEndpoints } from './fe-endpoints.mjs';
 import { readClusterStatus } from './cluster-status.mjs';
 import { createMonitoring } from './monitoring.mjs';
 import { createSourceRegistry, parseSourceInput } from './data-sources.mjs';
@@ -12,7 +13,7 @@ import { createAlerts } from './alerts.mjs';
 
 const liveKeys = [
   'DORIS_HOST', 'DORIS_PORT', 'DORIS_DATABASE', 'DORIS_USER', 'DORIS_PASSWORD',
-  'DORIS_TLS', 'DORIS_TLS_CA_FILE',
+  'DORIS_TLS', 'DORIS_TLS_CA_FILE', 'DORIS_FE_ENDPOINTS',
 ];
 const internalDatabases = ['information_schema', 'mysql', 'sys', 'performance_schema', '__internal_schema'];
 const maxBodyBytes = 128 * 1024;
@@ -51,7 +52,8 @@ function loadConfig(env, database) {
       throw new ApiError(503, 'DORIS_DATABASE 不是有效的库名。');
     }
   }
-  return { host, port, user, password, database, tls, caFile };
+  return { host: parseFeHost(host), port, user, password, database, tls, caFile,
+    feEndpoints: parseFeEndpoints(env.DORIS_FE_ENDPOINTS?.trim()) };
 }
 
 function sendJson(response, status, payload) {
@@ -177,14 +179,14 @@ function pingDoris(client, requireVersion = false) {
     await run('SELECT 1 AS ok', { maxRows: 1, timeoutMs: 4_000 });
     const result = await run('SELECT @@version_comment AS version', { maxRows: 1, timeoutMs: 4_000 })
       .catch((error) => {
-        if (requireVersion) throw error;
+        if (requireVersion || publicError(error).status >= 500) throw error;
       });
     const version = result?.rows[0]?.version;
     if (requireVersion && !/doris/i.test(String(version ?? ''))) {
       throw new ApiError(422, '此地址未返回 Apache Doris 版本，请检查 FE 查询端口。');
     }
     return version ? String(version) : undefined;
-  });
+  }, undefined, { retryTimeout: true });
 }
 
 export function createDorisApi(env) {
@@ -260,9 +262,11 @@ export function createDorisApi(env) {
   async function status({ client, source }) {
     const info = { mode, sourceId: source.id, database: source.config.database };
     try {
-      return { ...info, connected: true, version: await pingDoris(client) };
+      const version = await pingDoris(client);
+      return { ...info, connected: true, version, endpoint: client.endpoint };
     } catch (error) {
-      return { ...info, connected: false, error: publicError(error).message };
+      const failure = publicError(error);
+      return { ...info, connected: false, error: failure.message, retryable: failure.status >= 500 };
     }
   }
 
@@ -325,7 +329,7 @@ export function createDorisApi(env) {
         if (requestedSource !== undefined) throw new ApiError(404, '找不到所选数据源。');
         const error = configError || new ApiError(503, '请先添加 Doris 数据源。');
         if (url.pathname === '/api/status') {
-          return sendJson(response, 200, { mode, connected: false, database, error: error.message });
+          return sendJson(response, 200, { mode, connected: false, database, error: error.message, retryable: false });
         }
         throw error;
       }

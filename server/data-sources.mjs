@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { isIP } from 'node:net';
 import { join } from 'node:path';
-import { domainToASCII } from 'node:url';
 import { ApiError } from './errors.mjs';
+import { parseFeHost, parseFeEndpoints } from './fe-endpoints.mjs';
 import { quoteIdentifier } from './sql-policy.mjs';
 
 const defaultId = 'default';
@@ -14,7 +13,6 @@ const schemaVersion = 1;
 const registryFilename = 'sources.json';
 const unreadable = '无法读取 Doris 连接配置，请检查连接保存目录和配置文件。';
 const unwritable = '无法保存 Doris 连接配置，请检查连接保存目录是否可写。';
-const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const sourceId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function textField(value, maxLength, message) {
@@ -27,21 +25,6 @@ function textField(value, maxLength, message) {
 
 function sourceName(value) {
   return textField(value, maxNameLength, '请输入 1 至 48 个字符的连接名称。');
-}
-
-function sourceHost(value) {
-  const message = '请输入 Doris FE 的 IP 地址或主机名。';
-  const host = textField(value, 254, message);
-  const bracketed = host.startsWith('[') && host.endsWith(']');
-  const ip = bracketed ? host.slice(1, -1) : host;
-  if (bracketed ? isIP(ip) === 6 : isIP(ip) !== 0) return ip;
-  if (/[\\/:?#@%\[\]\s]/u.test(host)) throw new ApiError(400, message);
-  const ascii = domainToASCII(host);
-  const labels = ascii.endsWith('.') ? ascii.slice(0, -1) : ascii;
-  if (labels.length > 253 || isIP(labels) || !labels.split('.').every((label) => dnsLabel.test(label))) {
-    throw new ApiError(400, message);
-  }
-  return ascii;
 }
 
 function sourcePort(value) {
@@ -59,7 +42,7 @@ export function parseSourceInput(input) {
     throw new ApiError(400, '请提供有效的 Doris 连接配置。');
   }
   const name = sourceName(input.name);
-  const host = sourceHost(input.host);
+  const host = parseFeHost(input.host);
   const port = sourcePort(input.port);
   const user = textField(input.username, 128, '请输入 1 至 128 个字符的 Doris 用户名。');
   const { password, tls = false } = input;
@@ -72,7 +55,8 @@ export function parseSourceInput(input) {
   }
   const database = input.database?.trim() || '';
   if (database) quoteIdentifier(database);
-  return { name, config: { host, port, user, password, database, tls } };
+  const feEndpoints = parseFeEndpoints(input.feEndpoints);
+  return { name, config: { host, port, user, password, database, tls, ...(feEndpoints.length ? { feEndpoints } : {}) } };
 }
 
 function publicSource({ id, name, config: { host, port, database, tls } }) {
