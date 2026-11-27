@@ -7,6 +7,13 @@ const rules = [
   {key: 'qps', label: '查询吞吐量', unit: 'QPS', min: 0, step: 'any', hint: '可能仅为当前 FE'},
   {key: 'latencyMs', label: '平均查询耗时', unit: 'ms', min: 0, step: 'any', hint: '采样估算，可能仅为当前 FE'},
 ];
+const mysqlRules = [
+  {key: 'qps', label: 'SQL 请求速率', unit: 'QPS', min: 0, step: 'any', hint: 'MySQL Questions 计数的变化速率'},
+  {key: 'connectionUsagePercent', label: '连接使用率', unit: '%', min: 0, max: 100, step: 'any', hint: '当前连接数 / max_connections'},
+  {key: 'threadsRunning', label: '运行中的线程数', unit: '个', min: 1, step: '1', hint: 'MySQL Threads_running'},
+  {key: 'slowQueriesPerSecond', label: '慢查询速率', unit: '/s', min: 0, step: 'any', hint: 'MySQL Slow_queries 计数的变化速率'},
+];
+const rulesFor = type => type === 'mysql' ? mysqlRules : rules;
 const deliveryLabels = {alert: '告警', recovery: '恢复通知', test: '测试消息'};
 const dateFormat = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
@@ -22,13 +29,13 @@ function fieldValue(value) {
   return Number.isFinite(value) ? value : '';
 }
 
-export function alertFields(config, status, tag) {
-  const thresholds = rules.map(rule => `<label class="alert-rule">
+export function alertFields(config, status, tag, sourceType = 'doris') {
+  const thresholds = rulesFor(sourceType).map(rule => `<label class="alert-rule">
     <span class="alert-rule-copy"><strong>${rule.label}</strong><small>${rule.hint}</small></span>
     <span class="alert-value"><input class="input" type="number" name="${rule.key}" min="${rule.min}"${rule.max?` max="${rule.max}"`:''} step="${rule.step}" value="${fieldValue(config.thresholds?.[rule.key])}" placeholder="关闭" aria-label="${rule.label}阈值（${rule.unit}）"><span>${rule.unit}</span></span>
   </label>`).join('');
   return `<div class="alerts-delivery-column">
-    <form id="alerts-form" method="post" autocomplete="off" class="card alerts-rules">
+    <form id="alerts-form" method="post" autocomplete="off" class="card alerts-rules" data-source-type="${sourceType === 'mysql' ? 'mysql' : 'doris'}">
       <div class="card-head"><div><h2>当前数据源的告警规则</h2><p class="subtitle">指标达到阈值时触发，留空关闭该项。</p></div><label class="alert-switch"><input type="checkbox" name="enabled"${config.enabled?' checked':''}> 启用告警</label></div>
         <div class="alerts-card-body">
           <div class="alert-rule-list">${thresholds}</div>
@@ -41,7 +48,7 @@ export function alertFields(config, status, tag) {
           <div class="alert-form-footer"><p class="alert-feedback" id="alerts-feedback" role="status"></p><button class="button primary" type="submit">保存告警规则</button></div>
         </div>
     </form>
-    <section class="card" id="alerts-delivery">${alertDelivery(status, tag)}</section>
+    <section class="card" id="alerts-delivery">${alertDelivery(status, tag, sourceType)}</section>
   </div>`;
 }
 
@@ -80,12 +87,12 @@ export function webhookDelivery(last, tag) {
   return `<h3 class="alert-section-title">最近一次测试</h3>${deliveryResult(last, tag, '暂无测试记录。')}`;
 }
 
-export function alertDelivery(status, tag) {
+export function alertDelivery(status, tag, sourceType = 'doris') {
   const active = Array.isArray(status?.active) ? status.active : [];
   const last = status?.lastDelivery?.kind === 'test' ? null : status?.lastDelivery;
   const delivery = deliveryResult(last, tag, '暂无发送记录。');
   const activeRules = active.length ? `<ul class="alert-active-list">${active.map(item => {
-    const rule = rules.find(candidate => candidate.key === item?.key);
+    const rule = rulesFor(sourceType).find(candidate => candidate.key === item?.key);
     const since = formatTime(item?.since);
     return `<li><div class="alert-delivery-row"><strong>${escape(rule?.label || item?.key || '告警')}</strong>${item?.notified?tag('已通知','orange'):tag('待通知','')}</div>${since?`<small class="alert-detail">${since}触发</small>`:''}</li>`;
   }).join('')}</ul>` : '<p class="alert-detail">当前无触发中的规则。</p>';
@@ -97,7 +104,7 @@ export function alertDelivery(status, tag) {
 
 export function readAlertForm(form) {
   const fields = new FormData(form);
-  const thresholds = Object.fromEntries(rules.map(rule => {
+  const thresholds = Object.fromEntries(rulesFor(form.dataset.sourceType).map(rule => {
     const value = fields.get(rule.key);
     if (value === '' || value === null) return [rule.key, null];
     const number = Number(value);
@@ -106,6 +113,9 @@ export function readAlertForm(form) {
     }
     return [rule.key, number];
   }));
+  for (const rule of [...rules, ...mysqlRules]) {
+    if (!Object.hasOwn(thresholds, rule.key)) thresholds[rule.key] = null;
+  }
   return {
     enabled: fields.has('enabled'),
     notifyRecovery: fields.has('notifyRecovery'),

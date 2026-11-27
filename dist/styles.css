@@ -78,6 +78,7 @@
 .modal-body .connection-http-note { margin: 13px 0 0; }
 .modal-body .connection-form-error { margin: 12px 0 0; color: #a13f54; }
 .connection-current-name { text-align: right; overflow-wrap: anywhere; }
+#source-fe-endpoints[hidden] { display: none; }
 .alerts-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); gap: 18px; align-items: start; }
 .alerts-grid .card-head { flex-wrap: wrap; }
 .alerts-grid .subtitle { color: var(--sub); }

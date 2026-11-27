@@ -333,7 +333,7 @@ test('configured seeds survive a source registry restart and legacy configs rema
   const registry = createSourceRegistry({ directory, initialConfig: null });
   await registry.load();
   assert.equal(registry.storageError, null);
-  assert.deepEqual(registry.get(oldSource.id).config, config);
+  assert.deepEqual(registry.get(oldSource.id).config, { ...config, type: 'doris' });
   const { id } = await registry.add({ name: '有备用 FE', ...primary, username: config.user,
     password: config.password, feEndpoints: `${peer.host}:${peer.port}` });
   const reopened = createSourceRegistry({ directory, initialConfig: null });

@@ -53,7 +53,7 @@ function queryRows(connection, discard, sql, { maxRows = 1000, timeoutMs = 18_00
       else resolve({ columns, rows, truncated });
     }
 
-    const timer = setTimeout(() => finish(new ApiError(504, '等待 Doris 响应超时。')), timeoutMs);
+    const timer = setTimeout(() => finish(new ApiError(504, '等待数据库响应超时。')), timeoutMs);
     try {
       const query = connection.query({ sql, rowsAsArray: true });
       query.on('fields', (fields) => {
@@ -214,7 +214,8 @@ export function createDorisClient(config) {
           if (Date.now() + 5_000 >= deadline) break;
         }
       }
-      throw new ApiError(503, '已知的 Doris FE 暂时均无法连接。主节点切换后可配置同一集群的备用 FE 地址，再重试。');
+      throw new ApiError(503, config.type === 'mysql' ? 'MySQL 暂时无法连接，请检查实例地址、端口和服务状态。'
+        : '已知的 Doris FE 暂时均无法连接。主节点切换后可配置同一集群的备用 FE 地址，再重试。');
     } finally {
       active--;
     }

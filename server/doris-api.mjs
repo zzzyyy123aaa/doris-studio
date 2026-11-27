@@ -5,6 +5,7 @@ import { createDorisClient } from './doris-client.mjs';
 import { parseFeHost, parseFeEndpoints } from './fe-endpoints.mjs';
 import { readClusterStatus } from './cluster-status.mjs';
 import { createMonitoring } from './monitoring.mjs';
+import { createMysqlMonitoring } from './mysql-monitoring.mjs';
 import { createSourceRegistry, parseSourceInput } from './data-sources.mjs';
 import { quoteIdentifier, readOnlyStatement } from './sql-policy.mjs';
 import { createAlertStore } from './alert-store.mjs';
@@ -25,6 +26,8 @@ WHERE TABLE_CATALOG = 'internal'
   AND TABLE_SCHEMA NOT IN (${internalDatabases.map((name) => `'${name}'`).join(', ')})
 ORDER BY TABLE_SCHEMA, TABLE_NAME
 LIMIT ${maxCatalogRows + 1}`;
+const mysqlCatalogQuery = catalogQuery.replace('internal.information_schema.tables', 'information_schema.tables')
+  .replace("WHERE TABLE_CATALOG = 'internal'\n  AND", 'WHERE');
 
 function loadConfig(env, database) {
   const host = env.DORIS_HOST?.trim();
@@ -107,14 +110,14 @@ function requireComplete(result) {
   return result;
 }
 
-function listTables(client) {
+function listTables(client, type = 'doris') {
   return client.withConnection(async (run) => {
     const { columns, rows } = requireComplete(await run('SHOW DATABASES', { maxRows: maxCatalogRows }));
     const databases = rows.map((row) => String(row[columns[0]] ?? ''))
       .filter((name) => name && !internalDatabases.includes(name.toLowerCase()));
     if (!databases.length) return { databases: [], tables: [] };
 
-    const result = await run(catalogQuery, { maxRows: maxCatalogRows });
+    const result = await run(type === 'mysql' ? mysqlCatalogQuery : catalogQuery, { maxRows: maxCatalogRows });
     const visible = new Set(databases);
     const tables = requireComplete(result).rows.filter((row) => visible.has(row.db)).map((row) => ({
       db: row.db,
@@ -148,7 +151,7 @@ function tableDetails(client, url) {
     if (tab === 'ddl') {
       const { columns, rows } = requireComplete(await run(`SHOW CREATE TABLE ${table}`, { maxRows: 1 }));
       const ddl = rows[0]?.[columns[1]];
-      if (typeof ddl !== 'string') throw new ApiError(404, 'Doris 未返回建表语句。');
+      if (typeof ddl !== 'string') throw new ApiError(404, '数据库未返回建表语句。');
       return { ddl };
     }
     const limitValue = url.searchParams.get('limit') || '20';
@@ -160,18 +163,34 @@ function tableDetails(client, url) {
   });
 }
 
-async function runQuery(client, request, defaultDatabase) {
+async function runQuery(client, request, defaultDatabase, type = 'doris') {
   const body = await readJson(request);
   const sql = readOnlyStatement(body.sql);
   const database = body.database === undefined || body.database === '' ? defaultDatabase : body.database;
   if (database !== '') quoteIdentifier(database);
   return client.withConnection(async (run) => {
     // Doris applies this limit on the FE even if the client disconnects.
-    await run('SET query_timeout = 15', { timeoutMs: 5_000 });
+    if (type === 'mysql') {
+      await run('SET SESSION TRANSACTION READ ONLY', { timeoutMs: 5_000 });
+      await run('SET SESSION max_execution_time = 15000', { timeoutMs: 5_000 });
+    } else {
+      await run('SET query_timeout = 15', { timeoutMs: 5_000 });
+    }
     const start = performance.now();
     const result = await run(sql);
     return { ...result, duration: Math.max(1, Math.round(performance.now() - start)) };
-  }, database);
+  }, database, { discardAfterUse: true });
+}
+
+async function pingMysql(client) {
+  return client.withConnection(async (run) => {
+    const result = await run('SELECT VERSION() AS version, @@version_comment AS comment', { maxRows: 1, timeoutMs: 4_000 });
+    const { version, comment } = result.rows[0] ?? {};
+    if (!/^(?:5\.7|8\.\d+)\./.test(String(version)) || /doris|mariadb/i.test(`${version} ${comment}`)) {
+      throw new ApiError(422, '此地址未返回支持的 MySQL 5.7 或 8.x 版本，请核对数据库类型和端口。');
+    }
+    return `MySQL ${version}${comment ? ` · ${comment}` : ''}`;
+  });
 }
 
 function pingDoris(client, requireVersion = false) {
@@ -190,12 +209,13 @@ function pingDoris(client, requireVersion = false) {
 }
 
 export function createDorisApi(env) {
-  const mode = liveKeys.some((key) => env[key] !== undefined) ? 'live' : 'demo';
+  const hasDoris = liveKeys.some((key) => env[key] !== undefined);
+  const mode = hasDoris || env.STUDIO_MODE === 'live' ? 'live' : 'demo';
   const database = env.DORIS_DATABASE?.trim() || '';
   const monitoringDirectory = env.STUDIO_MONITORING_DIR?.trim();
   let configError;
   let initialConfig = null;
-  if (mode === 'live') {
+  if (hasDoris) {
     try {
       initialConfig = loadConfig(env, database);
     } catch (error) {
@@ -224,13 +244,18 @@ export function createDorisApi(env) {
     if (!sessions.has(source.id)) {
       if (closing) throw new ApiError(503, 'Doris Studio 正在关闭。');
       const { config } = source;
+      const type = config.type ?? 'doris';
       const client = createDorisClient(config);
       const endpoint = [config.host, config.port];
-      const readTopology = (includeMetrics = false) => readClusterStatus(client, { host: config.host, includeMetrics });
-      const monitoring = createMonitoring({
+      const readTopology = type === 'mysql'
+        ? async () => ({ type: 'mysql', sampledAt: new Date().toISOString(), frontends: { nodes: [], error: null }, backends: { nodes: [], error: null } })
+        : (includeMetrics = false) => readClusterStatus(client, { host: config.host, includeMetrics });
+      const makeMonitoring = type === 'mysql' ? createMysqlMonitoring : createMonitoring;
+      const monitoring = makeMonitoring({
+        client,
         getTopology: () => readTopology(true),
         directory: monitoringDirectory,
-        clusterKey: JSON.stringify(source.id === 'default' ? endpoint : [source.id, ...endpoint]),
+        clusterKey: JSON.stringify(type === 'mysql' ? ['mysql', source.id, ...endpoint] : source.id === 'default' ? endpoint : [source.id, ...endpoint]),
         onSample: (snapshot, values) => alerts.sample(registry.get(source.id) ?? source, snapshot, values),
       });
       sessions.set(source.id, { client, monitoring, readTopology, ready: monitoring.start() });
@@ -247,11 +272,14 @@ export function createDorisApi(env) {
     const { config } = parseSourceInput(input);
     const client = createDorisClient(config);
     try {
-      await pingDoris(client, true);
+      if (config.type === 'mysql') await pingMysql(client);
+      else await pingDoris(client, true);
     } finally {
       await client.close();
     }
-    return { source: await registry.add(input) };
+    const source = await registry.add(input);
+    if (source.type === 'mysql' && !closing) sourceSession(registry.get(source.id));
+    return { source };
   }
 
   async function renameSource(request) {
@@ -260,9 +288,10 @@ export function createDorisApi(env) {
   }
 
   async function status({ client, source }) {
-    const info = { mode, sourceId: source.id, database: source.config.database };
+    const type = source.config.type ?? 'doris';
+    const info = { mode, type, sourceId: source.id, database: source.config.database };
     try {
-      const version = await pingDoris(client);
+      const version = type === 'mysql' ? await pingMysql(client) : await pingDoris(client);
       return { ...info, connected: true, version, endpoint: client.endpoint };
     } catch (error) {
       const failure = publicError(error);
@@ -281,12 +310,12 @@ export function createDorisApi(env) {
     ['/api/cluster', { GET: (_, __, { readTopology }) => readTopology() }],
     ['/api/monitoring', { GET: (_, url, { monitoring }) => monitoringStatus(monitoring, url) }],
     ['/api/alerts', {
-      GET: (_, __, { source }) => alerts.read(source.id),
-      PUT: async (request, _, { source }) => alerts.update(source.id, await readJson(request)),
+      GET: async (_, __, { source }) => ({ ...await alerts.read(source.id), sourceType: source.config.type ?? 'doris' }),
+      PUT: async (request, _, { source }) => ({ ...await alerts.update(source.id, await readJson(request)), sourceType: source.config.type ?? 'doris' }),
     }],
-    ['/api/tables', { GET: (_, __, { client }) => listTables(client) }],
+    ['/api/tables', { GET: (_, __, { client, source }) => listTables(client, source.config.type) }],
     ['/api/table', { GET: (_, url, { client }) => tableDetails(client, url) }],
-    ['/api/query', { POST: (request, _, { client, source }) => runQuery(client, request, source.config.database) }],
+    ['/api/query', { POST: (request, _, { client, source }) => runQuery(client, request, source.config.database, source.config.type) }],
   ]);
   const globalRoutes = new Map([
     ['/api/sources', { GET: listSources, POST: addSource, PATCH: renameSource }],
@@ -327,7 +356,7 @@ export function createDorisApi(env) {
       const source = registry.get(requestedSource ?? registry.defaultId);
       if (!source) {
         if (requestedSource !== undefined) throw new ApiError(404, '找不到所选数据源。');
-        const error = configError || new ApiError(503, '请先添加 Doris 数据源。');
+        const error = configError || new ApiError(503, '请先添加数据库连接。');
         if (url.pathname === '/api/status') {
           return sendJson(response, 200, { mode, connected: false, database, error: error.message, retryable: false });
         }
@@ -348,8 +377,8 @@ export function createDorisApi(env) {
       await prepareRegistry();
       const source = registry.get(registry.defaultId);
       const startSource = async ({ id }) => {
-        if (id !== source?.id && !await alerts.configured(id).catch(() => false)) return;
         const entry = registry.get(id);
+        if (id !== source?.id && entry?.config.type !== 'mysql' && !await alerts.configured(id).catch(() => false)) return;
         if (entry && !closing) await sourceSession(entry).ready;
       };
       await Promise.all(registry.list().map(startSource));

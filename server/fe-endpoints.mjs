@@ -7,7 +7,7 @@ const maxEndpoints = 8;
 
 export function parseFeHost(value) {
   const host = typeof value === 'string' ? value.trim() : '';
-  const message = '请输入 Doris FE 的 IP 地址或主机名。';
+  const message = '请输入数据库的 IP 地址或主机名。';
   if (!host || host.length > 254) throw new ApiError(400, message);
   const bracketed = host.startsWith('[') && host.endsWith(']');
   const ip = bracketed ? host.slice(1, -1) : host;

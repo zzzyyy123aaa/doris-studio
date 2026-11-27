@@ -1,6 +1,7 @@
 import {tables,nodes,initialHistory,initialJobs,defaultSql,evaluateSQL} from './data.js';
 import {formatMetric,isMetric,monitoringRanges,renderMonitoringChart} from './monitoring-chart.js';
 import {alertDelivery,alertFields,readAlertForm,readWebhookForm,webhookDelivery,webhookFields} from './alerts.js';
+import {renderMysqlChart} from './mysql-monitoring.js';
 
 const paths={grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',code:'m8 5-6 7 6 7 m8-14 6 7-6 7 m-3-16-2 18',database:'M20 6c0 2.2-3.6 4-8 4S4 8.2 4 6s3.6-4 8-4 8 1.8 8 4Z M4 6v6c0 2.2 3.6 4 8 4s8-1.8 8-4V6 M4 12v6c0 2.2 3.6 4 8 4s8-1.8 8-4v-6',history:'M3 11a9 9 0 1 1 2 7 M3 4v7h7 M12 7v5l3 2',tasks:'M8 4H5v17h14V4h-3 M8 2h8v5H8z M8 12h8 M8 16h5',settings:'M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1 1-3Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',chevron:'m9 5 7 7-7 7',down:'m7 10 5 5 5-5',search:'M20 20l-5-5 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',bell:'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M9 21h6',help:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4 M12 17h.01',external:'M14 3h7v7 M21 3 10 14 M10 3H3v18h18v-7',plus:'M12 5v14 M5 12h14',refresh:'M20 7A9 9 0 0 0 4 5L2 8 M2 2v6h6 M4 17a9 9 0 0 0 16 2l2-3 M22 22v-6h-6',arrow:'M5 12h14 m-5-5 5 5-5 5',up:'m7 14 5-5 5 5 M12 9v10',trend:'m3 17 6-6 4 4 8-11 M15 4h6v6',activity:'M2 12h5l3-9 4 18 3-9h5',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M12 7v5l4 2',server:'M3 3h18v7H3z M3 14h18v7H3z M6 6.5h.01 M6 17.5h.01 M10 6.5h8 M10 17.5h8',check:'m5 12 4 4L19 6',shield:'m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6l8-4Z m-4 10 3 3 5-6',info:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M12 11v6 M12 7h.01',table:'M3 3h18v18H3z M3 9h18 M9 9v12 M3 15h18',play:'m7 3 14 9-14 9V3Z',pause:'M7 4v16 M17 4v16',download:'M12 3v12 m-5-5 5 5 5-5 M4 16v5h16v-5',save:'M4 3h13l4 4v14H3V3h1 M7 3v6h9V3 M7 21v-8h10v8',close:'m6 6 12 12 M6 18 18 6',menu:'M4 6h16 M4 12h16 M4 18h16',folder:'M3 5h7l2 3h9v13H3V5Z',key:'M14 9a5 5 0 1 1-10 0 5 5 0 0 1 10 0 M12 13l9 9 M16 17l3-3',file:'M14 2H4v20h16V8l-6-6Z M14 2v6h6 M8 13h8 M8 17h6',copy:'M8 8h13v13H8z M16 8V3H3v13h5',logout:'M9 3H3v18h6 M9 12h12 m-5-5 5 5-5 5',book:'M3 3h8c1 0 1 2 1 2s0-2 1-2h8v17h-8c-1 0-1 2-1 2s0-2-1-2H3V3Z M12 5v17',spark:'m12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3 3-7',filter:'M3 4h18l-7 8v7l-4 2v-9L3 4Z'};
 const icon=(name,cls='')=>`<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.grid}"/></svg>`;
@@ -17,6 +18,7 @@ const demoDatabases = ['analytics', 'warehouse', 'system'];
 const liveSql = 'SELECT 1;';
 const live = {
   enabled: false,
+  type: 'doris',
   checking: false,
   connected: false,
   retryable: true,
@@ -60,7 +62,9 @@ const currentDatabases = () => live.enabled ? live.databases : demoDatabases;
 const tableKey = table => live.enabled ? JSON.stringify([table.db, table.name]) : `${table.db}.${table.name}`;
 const selectedTable = () => currentTables().find(table => tableKey(table) === state.table);
 const activeConnection = () => live.connections.find(connection => connection.id === live.activeConnectionId);
-const clusterName=()=>live.enabled?(activeConnection()?.name || 'Doris 内网连接'):state.cluster==='production'?'Production Cluster':'Development Cluster';
+const mysqlSource = () => live.type === 'mysql';
+const databaseKind = () => mysqlSource() ? 'MySQL' : 'Doris';
+const clusterName=()=>live.enabled?(activeConnection()?.name || '数据库连接'):state.cluster==='production'?'Production Cluster':'Development Cluster';
 const routeLink=(route,content,cls='')=>`<a href="#/${route}" class="${cls}" aria-label="${esc(content.replace(/<[^>]*>/g,''))}">${content}</a>`;
 const button=(action,label,name='',cls='',disabled=false)=>`<button class="button ${cls}" data-action="${action}"${disabled?' disabled':''}>${name?icon(name):''}${label}</button>`;
 const tag=(text,color='green')=>`<span class="tag ${color}"><i class="dot"></i>${text}</span>`;
@@ -89,7 +93,7 @@ async function fetchApi(path, {body, signal, timeout = 20000, method = body === 
 }
 
 function describeError(error) {
-  if (error.name === 'TimeoutError') return '请求超时，请检查服务和 Doris 连接后重试。';
+  if (error.name === 'TimeoutError') return '请求超时，请检查服务和数据库连接后重试。';
   if (error instanceof TypeError) return '无法访问内网服务，请确认服务已启动且网络可达。';
   return error.message || '请求失败，请重试。';
 }
@@ -108,6 +112,7 @@ function sourceDescriptor(source) {
   if (typeof source?.id !== 'string' || !source.id || typeof source.name !== 'string') return null;
   return {
     id: source.id,
+    type: source.type === 'mysql' ? 'mysql' : 'doris',
     name: source.name,
     host: typeof source.host === 'string' ? source.host : '',
     port: Number.isInteger(source.port) ? source.port : null,
@@ -138,6 +143,7 @@ async function refreshConnections() {
       const found = live.connections.find(source => source.id === preferred);
       const defaultSource = live.connections.find(source => source.id === data.defaultId);
       live.activeConnectionId = (found || defaultSource || live.connections[0])?.id || '';
+      live.type = activeConnection()?.type || 'doris';
     }
     live.connectionsLoaded = true;
   } catch (error) {
@@ -176,6 +182,7 @@ async function switchConnection(id, {dismiss = true} = {}) {
   live.queryRequest = null;
   resetAlerts();
   live.activeConnectionId = source.id;
+  live.type = source.type;
   live.connected = false;
   live.retryable = true;
   live.database = '';
@@ -230,8 +237,9 @@ async function checkConnection({automatic = false} = {}) {
       return;
     }
     enableLive();
+    live.type = status.type === 'mysql' ? 'mysql' : 'doris';
     if (live.activeConnectionId && typeof status.sourceId === 'string' && status.sourceId !== live.activeConnectionId) {
-      throw new Error('服务返回了不同的 Doris 连接，请刷新连接列表后重试。');
+      throw new Error('服务返回了不同的数据库连接，请刷新连接列表后重试。');
     }
     if (!live.activeConnectionId && typeof status.sourceId === 'string') live.activeConnectionId = status.sourceId;
     live.connected = status.connected === true;
@@ -239,7 +247,7 @@ async function checkConnection({automatic = false} = {}) {
     live.database = typeof status.database === 'string' ? status.database : '';
     live.version = typeof status.version === 'string' ? status.version : '';
     if (!live.connected) {
-      live.error = status.error || 'Doris 连接未建立，请检查服务配置。';
+      live.error = status.error || '数据库连接未建立，请检查服务配置。';
       return;
     }
     live.error = '';
@@ -292,7 +300,7 @@ function syncConnectionRetry() {
 
 function refreshConnectionUi() {
   const sidebarStatus = document.querySelector('[data-connection-summary]');
-  if (sidebarStatus) sidebarStatus.innerHTML = `<i class="dot ${live.connected?'green':'red'}"></i> ${connectionLabel()}`;
+  if (sidebarStatus) sidebarStatus.innerHTML = `<i class="dot ${live.connected?'green':'red'}"></i> ${databaseKind()} · ${connectionLabel()}`;
   const currentCard = document.getElementById('live-connection-card');
   if (currentCard) currentCard.outerHTML = liveConnectionCard();
   const notice = document.getElementById('live-connection-notice');
@@ -373,13 +381,13 @@ document.title=`${title} · Doris Studio`;
 document.getElementById('app').innerHTML=`
 <aside class="sidebar" id="sidebar">
  <a href="#/overview" class="brand" aria-label="Doris Studio 首页"><img class="brand-mark" src="./favicon.svg" alt=""><div><div class="brand-name">doris<span style="font-weight:500;color:#8e86a0"> studio</span></div><div class="brand-sub">YOUR DATA, IN FOCUS</div></div></a>
- <button class="cluster-switch" data-action="cluster" aria-haspopup="dialog"${live.enabled?' aria-label="切换 Doris 连接"':''}><span class="cluster-symbol">${icon('database')}</span><span class="cluster-switch-copy"><strong id="active-connection-label" title="${esc(clusterName())}">${esc(clusterName())}</strong><small data-connection-summary><i class="dot ${live.enabled && !live.connected ? 'red' : 'green'}"></i> ${live.enabled ? connectionLabel() : `${state.cluster==='production'?'生产环境':'开发环境'} · 演示集群`}</small></span>${icon('down')}</button>
+ <button class="cluster-switch" data-action="cluster" aria-haspopup="dialog"${live.enabled?' aria-label="切换数据库连接"':''}><span class="cluster-symbol">${icon('database')}</span><span class="cluster-switch-copy"><strong id="active-connection-label" title="${esc(clusterName())}">${esc(clusterName())}</strong><small data-connection-summary><i class="dot ${live.enabled && !live.connected ? 'red' : 'green'}"></i> ${live.enabled ? `${databaseKind()} · ${connectionLabel()}` : `${state.cluster==='production'?'生产环境':'开发环境'} · 演示集群`}</small></span>${icon('down')}</button>
  <div class="nav-label">WORKSPACE</div>
  <nav aria-label="工作空间导航">${links.slice(0,4).map(([r,i,t])=>routeLink(r,`${icon(i)}<span>${t}</span>`, `nav-item ${state.route===r?'active':''}`)).join('')}</nav>
  <div class="nav-label second">MANAGEMENT</div>
  <nav aria-label="管理导航">${links.slice(4).map(([r,i,t])=>routeLink(r,`${icon(i)}<span>${t}</span>${r==='tasks'?`<span class="nav-count">${state.jobs.filter(j=>j.status==='RUNNING').length}</span>`:''}`,`nav-item ${state.route===r?'active':''}`)).join('')}</nav>
  <div class="nav-spacer"></div>
- <div class="help-card">${icon('book')}<h4>让数据探索更简单</h4><p>从第一条 SQL 开始，<br>了解 Doris 的更多可能。</p><a href="https://doris.apache.org/zh-CN/docs/gettingStarted/quick-start/" target="_blank" rel="noopener noreferrer">探索 Doris 文档 ${icon('external')}</a></div>
+ <div class="help-card">${icon('book')}<h4>让数据探索更简单</h4><p>从第一条 SQL 开始，<br>了解 ${databaseKind()} 的更多可能。</p><a href="${mysqlSource()?'https://dev.mysql.com/doc/':'https://doris.apache.org/zh-CN/docs/gettingStarted/quick-start/'}" target="_blank" rel="noopener noreferrer">探索 ${databaseKind()} 文档 ${icon('external')}</a></div>
  <a href="#/settings" class="sidebar-user"><div class="avatar">${live.enabled?'DS':'AD'}</div><div><strong>${live.enabled?'Doris Studio':'Admin'}</strong><small>${live.enabled?'内网工作空间':'工作空间管理员 · 演示'}</small></div>${icon('settings')}</a>
 </aside><div class="mobile-mask" data-action="mobile-close"></div>
 <div class="shell"><header class="topbar"><div class="flex gap8"><button class="icon-button hide-desktop" data-action="mobile" aria-label="打开导航">${icon('menu')}</button><div class="breadcrumb">${icon('grid')}<span>工作空间</span>${icon('chevron')}<span class="current">${title}</span></div></div><div class="top-actions"><button class="global-search" data-action="search">${icon('search')}<span>搜索数据库、表或功能…</span><kbd>⌘ K</kbd></button><span class="divider"></span><span class="demo-label">${live.enabled?'内网模式':'DEMO MODE'}</span><button class="icon-button" data-action="help" aria-label="使用帮助">${icon('help')}</button>${live.enabled?'':`<button class="icon-button" data-action="notifications" aria-label="通知">${icon('bell')}<i class="notification-dot"></i></button>`}<button class="avatar" data-action="profile" aria-label="工作空间设置">${live.enabled?'DS':'AD'}</button></div></header>
@@ -404,7 +412,7 @@ if (state.route === 'alerts') {
 }
 }
 function heading(eyebrow,title,desc,actions=''){return`<div class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${desc}</p></div><div class="heading-actions">${actions}</div></div>`}
-function footer(){return`<footer class="footer"><span><i class="dot"></i>${live.enabled?'内网模式 · Doris 只读工作空间':'所有数据均为演示数据 · 未连接真实 Doris 集群'}</span><span>Doris Studio <span style="padding:0 6px">/</span> Made for data explorers</span></footer>`}
+function footer(){return`<footer class="footer"><span><i class="dot"></i>${live.enabled?'内网模式 · 只读工作空间':'所有数据均为演示数据 · 未连接真实 Doris 集群'}</span><span>Doris Studio <span style="padding:0 6px">/</span> Made for data explorers</span></footer>`}
 function renderPage(){return({overview:live.enabled?liveOverview:overviewPage,sql:sqlPage,data:live.enabled?liveDataPage:dataPage,history:historyPage,tasks:tasksPage,alerts:alertsPage,settings:live.enabled?liveSettings:settingsPage}[state.route]||overviewPage)()+footer()}
 
 function connectionLabel() {
@@ -418,7 +426,10 @@ function connectionButton() {
 }
 
 function liveOverview() {
-  return `${heading('DORIS CONNECTION', '集群概览', '检查 Doris 连接、节点状态和可访问的库表。', `${connectionButton()}${routeLink('sql', icon('code')+'<span>SQL 工作台</span>', 'button primary')}`)}
+  const type = mysqlSource() ? 'MYSQL CONNECTION' : 'DORIS CONNECTION';
+  const title = mysqlSource() ? 'MySQL 实例概览' : '集群概览';
+  const description = mysqlSource() ? '查看 MySQL 请求速率、连接使用情况和可访问的库表。' : '检查 Doris 连接、节点状态和可访问的库表。';
+  return `${heading(type, title, description, `${connectionButton()}${routeLink('sql', icon('code')+'<span>SQL 工作台</span>', 'button primary')}`)}
     <div id="live-connection-notice" aria-live="polite">${connectionFailureNotice()}</div>
     <section id="live-monitoring" aria-label="集群监控">${renderMonitoring()}</section>
     <div class="settings-grid">
@@ -432,13 +443,13 @@ function liveOverview() {
         </div>
       </section>
     </div>
-    <section class="live-nodes" id="live-nodes" aria-label="集群节点">${renderCluster()}</section>`;
+    ${mysqlSource()?'':`<section class="live-nodes" id="live-nodes" aria-label="集群节点">${renderCluster()}</section>`}`;
 }
 
 function connectionFailureNotice() {
   if (live.connected || !live.error) return '';
   const retry = live.retryable ? '页面可见时每 15 秒自动重试。' : '请检查数据源配置后重试。';
-  return `<div class="error-box" role="status"><p>${esc(live.error)}</p><p>${retry}可检查 FE 地址、查询端口或切换数据源。</p>
+  return `<div class="error-box" role="status"><p>${esc(live.error)}</p><p>${retry}可检查数据库地址、查询端口或切换数据源。</p>
     ${button('check-connection',live.checking?'正在重试…':'立即重试','refresh','small',live.checking)} ${routeLink('settings','数据源管理 '+icon('arrow'),'text-button')}</div>`;
 }
 
@@ -446,7 +457,8 @@ function liveConnectionCard() {
   const tone = live.checking ? 'purple' : live.connected ? 'green' : 'red';
   return `<section class="card" id="live-connection-card"><div class="card-head"><h2>当前连接</h2>${tag(connectionLabel(), tone)}</div>
     <div class="settings-body">
-      <div class="settings-row"><strong>数据来源</strong><span class="sub connection-current-name" id="current-connection-label">${esc(activeConnection()?.name || (live.activeConnectionId ? 'Doris 内网连接' : '未选择连接'))}</span></div>
+      <div class="settings-row"><strong>数据来源</strong><span class="sub connection-current-name" id="current-connection-label">${esc(activeConnection()?.name || (live.activeConnectionId ? '数据库连接' : '未选择连接'))}</span></div>
+      <div class="settings-row"><strong>数据库类型</strong><span class="sub">${databaseKind()}</span></div>
       <div class="settings-row"><strong>默认数据库</strong><span class="sub">${esc(live.database || '未指定')}</span></div>
       ${live.version ? `<div class="settings-row"><strong>版本</strong><span class="sub">${esc(live.version)}</span></div>` : ''}
       ${live.error ? `<div class="notice-strip" role="alert">${esc(live.error)}</div>` : ''}
@@ -460,7 +472,7 @@ function cancelClusterRequest() {
 }
 
 async function loadCluster(force = false) {
-  if (!live.enabled || !live.connected || live.checking || state.route !== 'overview' || live.clusterRequest) return;
+  if (!live.enabled || mysqlSource() || !live.connected || live.checking || state.route !== 'overview' || live.clusterRequest) return;
   if (!force && (live.cluster || live.clusterError)) return;
 
   const request = new AbortController();
@@ -680,6 +692,7 @@ function refreshMonitoring() {
 
 function renderMonitoring() {
   const data = live.monitoring;
+  if (mysqlSource()) return renderMysqlMonitoring(data);
   const metrics = data?.current || {};
   const feOnly = data?.metricScope === 'connected-fe';
   const beHttp = backendHttpCollection(data);
@@ -703,10 +716,52 @@ function renderMonitoring() {
     <div class="charts-grid live-monitor-charts">${renderLiveTrend(data, pending, feOnly)}${renderLiveResources(metrics, feOnly, beHttp)}</div>`;
 }
 
+function renderMysqlMonitoring(data) {
+  const metrics = data?.current || {};
+  const pending = Boolean(live.monitoringRequest) || live.checking;
+  const status = monitoringStatus(data, pending);
+  const footprint = formatBytes(metrics.storageBytes);
+  const traffic = formatBytes(metrics.networkBytesPerSecond);
+  const refresh = button('refresh-monitoring',pending?'采集中…':'刷新监控','refresh','small',pending || !live.connected);
+  const history = live.monitoringRange === state.range ? data?.history : null;
+  const chart = history ? renderMysqlChart(history,state.range,data.sampledAt) : '';
+  const controls = Object.entries(monitoringRanges).map(([range,config])=>`<button data-live-range="${range}" aria-pressed="${state.range===range}" class="${state.range===range?'active':''}">${config.label}</button>`).join('');
+  const unavailable = pending ? '等待采样' : '当前不可用';
+  const emptyTrend = pending ? '正在读取所选时段…' : live.monitoringError ? '未能读取所选时段，请重试。' : '此时段暂无 SQL 请求速率采样，连续采集后将在此显示。';
+  return `<div class="live-monitor-bar"><div class="live-monitor-source">${tag(status.label,status.color)}${tag('MySQL','purple')}${data?renderClusterTimestamp(data.sampledAt):''}</div>${refresh}</div>
+    ${status.message?`<p class="notice-strip live-monitor-notice" role="status">${esc(status.message)}</p>`:''}
+    <section class="stats-grid" aria-label="MySQL 关键指标">
+      ${stat('SQL 请求速率',formatMetric(metrics.qps),'QPS','activity','',`<span>${isMetric(metrics.qps)?'Questions 计数的变化速率':unavailable}</span>`)}
+      ${stat('显式事务速率',formatMetric(metrics.tps),'TPS','clock','blue','<span>COMMIT + ROLLBACK 的变化速率</span>')}
+      ${stat('当前连接数',formatMetric(metrics.connections),'','server','green',`<span>max_connections ${formatMetric(metrics.maxConnections)}</span>`)}
+      ${stat('可见表逻辑大小',footprint.value,footprint.unit,'database','orange','<span>可访问表的数据与索引估算</span>')}
+    </section>
+    <section class="charts-grid live-monitor-charts"><div class="card live-monitor-trend"><div class="card-head"><div><h2>SQL 请求速率趋势</h2><p class="subtitle">北京时间 · 采样缺口留空</p></div><div class="segmented" aria-label="图表时间范围">${controls}</div></div><div class="chart-legend"><span><i class="legend-dot"></i>SQL 请求（QPS）</span></div>${chart || `<div class="empty live-monitor-empty" role="status">${icon('activity')}${emptyTrend}</div>`}</div>
+      <div class="card"><div class="card-head"><h2>MySQL 运行情况</h2></div><div class="settings-body">
+        ${renderResourcePercent('连接使用率',metrics.connectionUsagePercent,'')}
+        <div class="settings-row"><strong>运行中的线程数</strong><span class="num">${formatMetric(metrics.threadsRunning)}</span></div>
+        <div class="settings-row"><strong>慢查询速率</strong><span class="num">${formatMetric(metrics.slowQueriesPerSecond)} /s</span></div>
+        <div class="settings-row"><strong>InnoDB 缓冲池命中率</strong><span class="num">${formatMetric(metrics.bufferPoolHitPercent)}${isMetric(metrics.bufferPoolHitPercent)?'%':''}</span></div>
+        <div class="settings-row"><strong>网络发送与接收</strong><span class="num">${traffic.value}${traffic.unit?` ${traffic.unit}/s`:''}</span></div>
+        <div class="settings-row"><strong>实例运行时长</strong><span class="num">${mysqlUptime(metrics.uptimeSeconds)}</span></div>
+      </div></div>
+    </section>`;
+}
+
+function mysqlUptime(seconds) {
+  if (!isMetric(seconds)) return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor(seconds % 86400 / 3600);
+  const minutes = Math.floor(seconds % 3600 / 60);
+  if (days) return `${days} 天 ${hours} 小时`;
+  if (hours) return `${hours} 小时 ${minutes} 分钟`;
+  return minutes ? `${minutes} 分钟` : `${Math.floor(seconds)} 秒`;
+}
+
 function monitoringStatus(data, pending) {
   if (live.monitoringError) return {label: '刷新失败', color: 'red', message: live.monitoringError};
   if (!data) return pending ? {label:'等待采样', color:'purple'} : {label:'等待连接', color:''};
-  if (data.sourceStatus === 'unavailable') return {label:'监控不可用', color:'red', message:data.message || '当前未采集到 Doris 监控数据。'};
+  if (data.sourceStatus === 'unavailable') return {label:'监控不可用', color:'red', message:data.message || '当前未采集到数据库监控数据。'};
   if (data.sourceStatus === 'partial') return {label:'部分可用', color:'orange', message:data.message || '部分节点或指标暂无采样。'};
   return {label:'监控已采集', color:'green', message:data.message};
 }
@@ -848,6 +903,7 @@ function updateLiveSample(index) {
 
 function liveSampleText(sample) {
   const {label, qps, latency} = sample.dataset;
+  if (sample.dataset.metric === 'mysql') return `${label} · SQL 请求 ${qps} QPS`;
   return `${label} · QPS ${qps} · ${latency === '—' ? '耗时 —' : `${latency} ms`}`;
 }
 const spark=(color,values)=>`<svg class="stat-spark" viewBox="0 0 60 20" aria-hidden="true"><path d="M0 ${values}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
@@ -925,7 +981,7 @@ function databaseOptions() {
 
 function sqlPage() {
   const connectionNotice = live.enabled && !live.connected ? `<div class="notice-strip" role="alert">${esc(live.error || '正在检查连接。')} ${connectionButton()}</div>` : '';
-  const description = live.enabled ? '在 Doris 执行单条只读查询。新集群可运行 SELECT 1; 验证连接。' : '支持 SELECT、WHERE、ORDER BY、LIMIT、COUNT(*)、SHOW 和 DESC。所有查询在浏览器内执行，仅作用于示例数据。';
+  const description = live.enabled ? '执行单条只读查询。可运行 SELECT 1; 验证连接。' : '支持 SELECT、WHERE、ORDER BY、LIMIT、COUNT(*)、SHOW 和 DESC。所有查询在浏览器内执行，仅作用于示例数据。';
 
   return `${heading('SQL WORKSPACE','SQL 工作台','编辑、执行并导出查询结果。',button('saved','已保存查询','folder'))}
     <div class="workspace">${explorer()}<section>
@@ -1002,7 +1058,7 @@ function renderLiveDetailTab() {
     const fields = data.columns.map(column => `<tr><td class="mono">${esc(column.name)}</td><td><span class="tag purple">${esc(column.type)}</span></td><td>${column.key?icon('key'):'—'}</td><td>${esc(column.comment)}</td></tr>`);
     return `<div class="table-scroll"><table class="data-table"><thead><tr><th>字段名称</th><th>类型</th><th>键列</th><th>说明</th></tr></thead><tbody>${fields.join('')}</tbody></table></div>`;
   }
-  return `<div class="filter-bar"><span class="sub">Doris 返回的建表语句</span>${button('copy-ddl','复制','copy','small quiet')}</div><pre class="ddl">${esc(data.ddl)}</pre>`;
+  return `<div class="filter-bar"><span class="sub">${databaseKind()} 返回的建表语句</span>${button('copy-ddl','复制','copy','small quiet')}</div><pre class="ddl">${esc(data.ddl)}</pre>`;
 }
 
 async function loadLiveDetail(force = false) {
@@ -1059,11 +1115,11 @@ function alertsPage() {
 
 function renderAlerts() {
   if (!live.activeConnectionId) {
-    return `<section class="card empty">${icon('database')}请先添加或选择 Doris 连接。<br>${routeLink('settings','打开数据源管理 '+icon('arrow'),'text-button')}</section>`;
+    return `<section class="card empty">${icon('database')}请先添加或选择数据库连接。<br>${routeLink('settings','打开数据源管理 '+icon('arrow'),'text-button')}</section>`;
   }
   if (alerts.error) return `<section class="card"><div class="error-box" role="alert">${esc(alerts.error)} ${button('retry-alerts','重试','refresh','small quiet')}</div></section>`;
   if (!alerts.data) return `<section class="card empty" role="status">${icon('refresh','spin')}正在加载告警配置…</section>`;
-  return alertFields(alerts.data.config, alerts.data.status, tag);
+  return alertFields(alerts.data.config, alerts.data.status, tag, live.type);
 }
 
 function refreshAlerts() {
@@ -1074,7 +1130,7 @@ function refreshAlerts() {
 
 function refreshAlertDelivery() {
   const delivery = document.getElementById('alerts-delivery');
-  if (delivery && alerts.data) delivery.innerHTML = alertDelivery(alerts.data.status, tag);
+  if (delivery && alerts.data) delivery.innerHTML = alertDelivery(alerts.data.status, tag, live.type);
 }
 
 function renderAlertWebhook() {
@@ -1277,14 +1333,14 @@ function sourceAddress(source) {
 }
 
 function sourceSummary(source) {
-  return `<span class="connection-row-copy"><strong>${esc(source.name)}</strong><small>${esc(sourceAddress(source))}${source.database?` · ${esc(source.database)}`:''}</small></span>`;
+  return `<span class="connection-row-copy"><strong>${esc(source.name)}</strong><small>${source.type==='mysql'?'MySQL':'Doris'} · ${esc(sourceAddress(source))}${source.database?` · ${esc(source.database)}`:''}</small></span>`;
 }
 
 function renderConnectionList(picker) {
   const error = live.connectionsError || live.storageError;
   const warning = error ? `<div class="connection-list-notice"><p role="alert">${esc(error)}</p>${live.connectionsError ? button('refresh-connections','重试','refresh','small quiet') : ''}</div>` : '';
   if (!live.connections.length) {
-    const hint = live.connectionsRequest ? '正在读取连接列表…' : live.connectionsLoaded ? '暂无 Doris 连接。可以新增一个连接。' : '连接列表尚不可用。';
+    const hint = live.connectionsRequest ? '正在读取连接列表…' : live.connectionsLoaded ? '暂无数据库连接。可以新增一个连接。' : '连接列表尚不可用。';
     return `${warning}<div class="empty connection-list-empty" role="status">${hint}</div>`;
   }
   const items = live.connections.map(source => {
@@ -1316,7 +1372,7 @@ function renderConnectionViews() {
 
 function openConnectionPicker() {
   const actions = `${button('manage-connections','数据源管理','settings')}${button('add-connection','新增连接','plus','primary')}`;
-  modal('切换 Doris 连接', `<div id="connection-picker-list">${renderConnectionList(true)}</div>`, actions, true);
+  modal('切换数据库连接', `<div id="connection-picker-list">${renderConnectionList(true)}</div>`, actions, true);
   loadConnections();
 }
 
@@ -1325,21 +1381,38 @@ function openConnectionForm(source) {
   const isRename = Boolean(source);
   const lanHttp = location.protocol === 'http:' && !['localhost','127.0.0.1','[::1]'].includes(location.hostname);
   const transportNote = lanHttp && !isRename ? '<p class="notice-strip connection-http-note">当前通过 HTTP 访问，密码会经内网明文传输。</p>' : '';
-  const fields = isRename ? '' : `<div class="connection-form-grid">
-      <label class="field"><span>FE 地址</span><input class="input" name="host" placeholder="doris-fe.intra" maxlength="253" required></label>
-      <label class="field"><span>查询端口</span><input class="input" name="port" type="number" min="1" max="65535" value="9030" required></label>
+  const fields = isRename ? '' : `<label class="field"><span>数据库类型</span><select class="input" name="type" id="source-database-type"><option value="doris">Apache Doris</option><option value="mysql">MySQL</option></select></label>
+    <div class="connection-form-grid">
+      <label class="field"><span id="source-host-label">FE 地址</span><input class="input" name="host" id="source-host" placeholder="doris-fe.intra" maxlength="253" required></label>
+      <label class="field"><span>查询端口</span><input class="input" name="port" id="source-port" type="number" min="1" max="65535" value="9030" required></label>
       <label class="field"><span>用户名</span><input class="input" name="username" maxlength="128" required></label>
       <label class="field"><span>密码</span><input class="input" name="password" type="password" autocomplete="new-password" maxlength="1024"></label>
     </div>
-    <label class="field"><span>备用 FE 地址（可选）</span><input class="input" name="feEndpoints" placeholder="fe-a:9030,fe-b:9030" maxlength="4096"><small>仅填写同一 Doris 集群的 FE 查询地址，用逗号分隔。</small></label>
+    <label class="field" id="source-fe-endpoints"><span>备用 FE 地址（可选）</span><input class="input" name="feEndpoints" placeholder="fe-a:9030,fe-b:9030" maxlength="4096"><small>仅填写同一 Doris 集群的 FE 查询地址，用逗号分隔。</small></label>
     <label class="field"><span>默认数据库（可选）</span><input class="input" name="database" maxlength="128"></label>
-    <label class="connection-tls"><input type="checkbox" name="tls"> 启用 Doris SQL TLS</label>`;
+    <label class="connection-tls"><input type="checkbox" name="tls"> 启用 SQL TLS</label>`;
   const form = `<form id="connection-form" method="post" autocomplete="off"${isRename?` data-connection-id="${esc(source.id)}"`:''}>
     <label class="field"><span>连接名称</span><input class="input" name="name" maxlength="48" placeholder="例如：分析集群" value="${esc(source?.name || '')}" required></label>
     ${fields}${transportNote}<p class="error-box connection-form-error" role="alert" hidden></p>
   </form>`;
   const actions = `${button('close-modal','取消')}<button type="submit" form="connection-form" class="button primary">${icon('save')}<span>${isRename?'保存名称':'测试并保存'}</span></button>`;
-  modal(isRename ? '重命名连接' : '新增 Doris 连接', form, actions, true);
+  modal(isRename ? '重命名连接' : '新增数据库连接', form, actions, true);
+}
+
+function updateSourceType(type) {
+  const mysql = type === 'mysql';
+  const port = document.getElementById('source-port');
+  if (port && ['', '9030', '3306'].includes(port.value)) port.value = mysql ? '3306' : '9030';
+  const hostLabel = document.getElementById('source-host-label');
+  if (hostLabel) hostLabel.textContent = mysql ? '主机地址' : 'FE 地址';
+  const host = document.getElementById('source-host');
+  if (host) host.placeholder = mysql ? 'mysql.intra' : 'doris-fe.intra';
+  const backup = document.getElementById('source-fe-endpoints');
+  if (backup) {
+    backup.hidden = mysql;
+    const input = backup.querySelector('input');
+    if (input) input.disabled = mysql;
+  }
 }
 
 async function submitConnection(form) {
@@ -1352,9 +1425,9 @@ async function submitConnection(form) {
   if (!name) { errorBox.textContent = '请填写连接名称。'; errorBox.hidden = false; return; }
   const body = id ? {id, name} : {
     name, host:text('host'), port:Number(text('port')), username:text('username'),
-    password:String(fields.get('password') ?? ''), database:text('database'), tls:fields.has('tls'),
+    password:String(fields.get('password') ?? ''), database:text('database'), tls:fields.has('tls'), type:text('type') === 'mysql' ? 'mysql' : 'doris',
   };
-  if (!id && text('feEndpoints')) body.feEndpoints = text('feEndpoints');
+  if (!id && body.type !== 'mysql' && text('feEndpoints')) body.feEndpoints = text('feEndpoints');
   const submit = document.querySelector('button[form="connection-form"]');
   const caption = submit?.querySelector('span');
   live.connectionMutation = true;
@@ -1367,7 +1440,7 @@ async function submitConnection(form) {
     if (!source) throw new Error('服务未返回保存结果，请刷新连接列表确认。');
     applySource(source);
     if (form.isConnected) closeModal();
-    toast(id ? '连接名称已更新' : 'Doris 连接已添加');
+    toast(id ? '连接名称已更新' : '数据库连接已添加');
     if (!live.activeConnectionId) await switchConnection(source.id, {dismiss:false});
   } catch (error) {
     if (form.isConnected) {
@@ -1629,6 +1702,7 @@ document.addEventListener('input',e=>{
  if(e.target.id==='live-chart-sample')updateLiveSample(e.target.value);
 });
 document.addEventListener('change',e=>{
+ if(e.target.id==='source-database-type')updateSourceType(e.target.value);
  if(e.target.id==='sql-db'){state.db=e.target.value;state.result=null;state.error=null;refreshMain()}
  if(e.target.id==='history-filter'){state.historyFilter=e.target.value;document.getElementById('history-table').innerHTML=historyTable()}
 });
@@ -1658,7 +1732,7 @@ window.addEventListener('hashchange',()=>{if(!initialized)return;state.route=rou
 document.addEventListener('visibilitychange', syncConnectionRetry);
 
 if (document.querySelector('meta[name="doris-mode"][content="live"]')) enableLive();
-document.getElementById('app').innerHTML = '<main class="empty" role="status">正在检查 Doris 连接…</main>';
+document.getElementById('app').innerHTML = '<main class="empty" role="status">正在检查数据库连接…</main>';
 await checkConnection();
 if (!live.enabled) {
   const fonts = document.createElement('link');

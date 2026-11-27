@@ -14,6 +14,9 @@ const thresholdsByDefault = {
   diskPercent: 85,
   qps: null,
   latencyMs: null,
+  connectionUsagePercent: null,
+  threadsRunning: null,
+  slowQueriesPerSecond: null,
 };
 const thresholdNames = {
   feOffline: 'FE 离线数量',
@@ -23,6 +26,9 @@ const thresholdNames = {
   diskPercent: '存储使用率',
   qps: 'QPS',
   latencyMs: '查询延迟',
+  connectionUsagePercent: '连接使用率',
+  threadsRunning: '运行线程数',
+  slowQueriesPerSecond: '慢查询速率',
 };
 const ruleKeys = Object.keys(thresholdsByDefault);
 const deliveryKinds = new Set(['alert', 'recovery', 'test']);
@@ -53,10 +59,10 @@ function parseThresholds(input) {
   if (!object(input)) throw new ApiError(400, '请提供有效的告警阈值。');
   const thresholds = {};
   for (const key of ruleKeys) {
-    const value = input[key];
+    const value = input[key] ?? null;
     if (value !== null) {
       const name = thresholdNames[key];
-      if (key.endsWith('Offline')) {
+      if (key.endsWith('Offline') || key === 'threadsRunning') {
         if (!Number.isSafeInteger(value) || value < 1) {
           throw new ApiError(400, `${name}必须是大于或等于 1 的整数。`);
         }
@@ -132,7 +138,7 @@ function parseRuntime(input) {
       || (activeSince !== null && !validDate(activeSince))
       || typeof notified !== 'boolean'
       || (lastSentAt !== null && (!Number.isSafeInteger(lastSentAt) || lastSentAt < 0))
-      || (scope !== undefined && scope !== 'cluster' && scope !== 'connected-fe')
+      || (scope !== undefined && !['cluster', 'connected-fe', 'mysql'].includes(scope))
       || (metricSource !== undefined && (typeof metricSource !== 'string' || metricSource.length > 512 || /[\p{Cc}\p{Cs}]/u.test(metricSource)))
       || (destination !== undefined && destination !== null
         && (typeof destination !== 'string' || !/^[a-f0-9]{64}$/.test(destination)))

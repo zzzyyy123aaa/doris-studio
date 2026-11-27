@@ -6,7 +6,7 @@ const deniedWords = new Set(['INTO', 'OUTFILE', 'DUMPFILE']);
 
 export function quoteIdentifier(name) {
   if (typeof name !== 'string' || !identifierPattern.test(name) || !name.trim()) {
-    throw new ApiError(400, '请提供有效的 Doris 库名或表名。');
+    throw new ApiError(400, '请提供有效的库名或表名。');
   }
   return '`' + name.replaceAll('`', '``') + '`';
 }

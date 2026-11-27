@@ -7,6 +7,8 @@ const labels = {
   feOffline: ['FE 离线节点', ' 个'], beOffline: ['BE 离线节点', ' 个'],
   cpuPercent: ['BE 主机 CPU', '%'], memoryPercent: ['FE 主机内存', '%'],
   diskPercent: ['BE 数据盘最高使用率', '%'], qps: ['查询吞吐量', ' QPS'], latencyMs: ['平均查询耗时（采样估算）', ' ms'],
+  connectionUsagePercent: ['MySQL 连接使用率', '%'], threadsRunning: ['MySQL 运行线程数', ' 个'],
+  slowQueriesPerSecond: ['MySQL 慢查询速率', ' 次/秒'],
 };
 const dateFormat = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai', dateStyle: 'medium', timeStyle: 'medium', hourCycle: 'h23',
@@ -19,6 +21,7 @@ const feRules = new Set(['memoryPercent', 'qps', 'latencyMs']);
 const initialRule = () => ({ streak: 0, activeSince: null, notified: false, lastSentAt: null, pendingRecovery: false });
 
 function title(key, scope) {
+  if (scope === 'mysql' && key === 'qps') return 'MySQL SQL 请求速率';
   const base = labels[key][0];
   return scope === 'connected-fe' && feRules.has(key) ? `${base}（当前 FE）` : base;
 }

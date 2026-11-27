@@ -1,10 +1,10 @@
 # Doris Studio
 
-Doris Studio 是 Apache Doris 的中文可视化管理页面。内网版支持连接并切换多个 Doris 数据源，浏览库表和字段、预览数据、运行只读 SQL、导出 CSV，以及查看集群指标和配置飞书告警。演示版使用内置样本。
+Doris Studio 是 Apache Doris 的中文可视化管理页面。内网版支持连接并切换 Doris 与 MySQL 数据源，浏览库表和字段、预览数据、运行只读 SQL、导出 CSV，以及查看数据库指标和配置飞书告警。演示版使用内置样本。
 
 ## 本地演示
 
-在没有 `.env` 和 `DORIS_*` 环境变量的项目目录中，用 Node.js 22 或更新版本启动。演示无需安装数据库驱动。浏览器打开 `http://127.0.0.1:4173`，也可将 `dist/` 作为静态站点托管。
+在没有 `.env`、`DORIS_*` 或 `STUDIO_MODE` 环境配置的项目目录中，用 Node.js 22 或更新版本启动。演示无需安装数据库驱动。浏览器打开 `http://127.0.0.1:4173`，也可将 `dist/` 作为静态站点托管。
 
 ```sh
 node server.mjs
@@ -57,7 +57,7 @@ docker run --rm --pull=never --network none doris-studio:1.0.0 node --version
 
 ### 首次启动
 
-在部署服务器创建配置文件。在编辑器中填写 Doris 连接信息和密码。下表说明各项配置，文件应留在部署服务器。
+在部署服务器创建配置文件。在编辑器中填写 Doris 连接信息和密码。仅使用 MySQL 时，按「MySQL 接入与监控」中的最小配置填写。下表说明各项配置，文件应留在部署服务器。
 
 ```sh
 umask 077
@@ -80,7 +80,7 @@ docker logs --tail 30 doris-studio
 curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
 ```
 
-状态接口返回 `"mode":"live"` 和 `"connected":true` 后，在 SQL 工作台运行 `SELECT 1;` 验证连接。
+已配置数据库连接时，状态接口返回 `"mode":"live"` 和 `"connected":true` 后，在 SQL 工作台运行 `SELECT 1;` 验证连接。仅使用 MySQL 的新部署在添加首个数据源前显示未连接，此时先通过页面添加连接。
 
 ### 内网 HTTP 网关
 
@@ -107,7 +107,7 @@ ssh -N -L 4173:127.0.0.1:4173 user@studio-server.example.internal
 
 升级脚本适用于正在运行、状态接口可访问、采用标准容器名称和主机网络的部署。它复用现有 `.env` 和 `doris-studio-monitoring` 卷。默认 FE 离线、页面显示连接失败时，也可执行这个升级流程。建议升级前按现有运维流程备份 `.env` 和数据卷，备份按凭据文件保管。如果已有额外挂载，例如私有 CA 证书，请按原容器配置手动替换。
 
-先编辑部署服务器上的现有 `.env`，保留 `DORIS_HOST` 和 `DORIS_PORT`，将同一 Doris 集群中仍可访问的其他 FE 查询地址填入 `DORIS_FE_ENDPOINTS`。使用实际主机名替换示例。
+遇到默认 Doris FE 离线时，先编辑部署服务器上的现有 `.env`，保留 `DORIS_HOST` 和 `DORIS_PORT`，将同一 Doris 集群中仍可访问的其他 FE 查询地址填入 `DORIS_FE_ENDPOINTS`。使用实际主机名替换示例。
 
 ```dotenv
 DORIS_FE_ENDPOINTS=fe02.example.internal:9030,fe03.example.internal:9030
@@ -126,7 +126,7 @@ docker save -o doris-studio-linux-amd64.tar doris-studio:1.0.0
 sudo bash deploy/container/upgrade-cluster.sh /path/to/deployment/.env /path/to/doris-studio-linux-amd64.tar
 ```
 
-脚本会导入镜像，预检数据卷并短暂停机切换容器。升级前检查允许 Doris 暂时断连，升级后仍要求新容器连通 Doris，并通过监控、数据源和告警接口检查。失败时会尝试恢复原容器。成功后，脚本会打印保留的旧容器名，其状态为已停止，自动重启已关闭。网关继续使用原来的回环上游。
+脚本会导入镜像，预检数据卷并短暂停机切换容器。升级前检查允许现有数据源暂时断连，升级后要求新容器连通默认数据源，并通过监控、数据源和告警接口检查。失败时会尝试恢复原容器。成功后，脚本会打印保留的旧容器名，其状态为已停止，自动重启已关闭。网关继续使用原来的回环上游。
 
 ```sh
 curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
@@ -160,6 +160,7 @@ curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
 
 | 变量 | 含义 |
 | --- | --- |
+| `STUDIO_MODE` | 可选，设为 `live` 后启用服务端数据源管理，可用于仅接入 MySQL 的部署。已有 `DORIS_*` 配置会自动启用内网版 |
 | `DORIS_HOST` | 默认数据源的 Doris FE 地址，填写内网 IP 或主机名 |
 | `DORIS_PORT` | FE MySQL 查询端口，默认 `9030` |
 | `DORIS_FE_ENDPOINTS` | 可选，同一集群的其他 FE 查询地址，以逗号分隔，最多 8 个。每项使用 `host:port`，IPv6 使用 `[地址]:port` |
@@ -171,7 +172,7 @@ curl --noproxy '*' --max-time 20 http://127.0.0.1:4173/api/status
 | `STUDIO_PORT` | 页面回环监听端口，默认 `4173` |
 | `STUDIO_MONITORING_DIR` | 数据目录。Docker 标准部署使用 `/app/monitoring-data`，直接运行 Node 时可指定绝对路径 |
 
-`.env` 中的连接作为默认数据源。「数据源管理」可添加、切换和重命名连接。新增时会验证 Doris 连接，重命名只改变显示名称。访问同一部署的浏览器共享服务端连接和权限，各浏览器独立记住所选数据源。标准容器部署将新增连接保存到数据卷的 `sources/sources.json`，飞书配置保存到 `alerts/webhook.json`，文件权限均为 `0600`。请将数据卷及其备份按凭据文件管理。
+配置了 `.env` 中的 Doris 连接参数时，该连接作为默认 Doris 数据源。「数据源管理」可添加、切换和重命名 Doris 或 MySQL 连接。新增时按所选类型验证数据库，重命名只改变显示名称。访问同一部署的浏览器共享服务端连接和权限，各浏览器独立记住所选数据源。标准容器部署将新增连接保存到数据卷的 `sources/sources.json`，飞书配置保存到 `alerts/webhook.json`，文件权限均为 `0600`。请将数据卷及其备份按凭据文件管理。
 
 同一数据源的 FE 切换共用 Doris 账号、默认库和 TLS 配置，备用地址应指向同一集群，并允许该账号登录。已有单 FE 配置可继续使用。成功读取节点拓扑后，服务会在内存中记住已加入集群且在线的其他 FE，遇到连接故障时尝试备用地址。为在主地址离线时启动或重启，需显式保存备用地址。Doris 2.1 等版本的只读账号无法读取 FE 拓扑时，也需显式配置。FE 切换沿用原数据源及其监控历史。
 
@@ -191,11 +192,54 @@ node server.mjs
 
 监控约每 30 秒采样，历史从首次采样起累计并保留最近 30 天。CPU 和网络速率需要连续两轮样本，平均查询耗时是 FE 采样估算。遇到权限、认证或连通性限制时，未采集到的指标和历史缺口留空。多个存储根目录可能共用磁盘时，兼容采集保留 Doris 数据占用，并将无法确认的磁盘总容量留空。
 
+## MySQL 接入与监控
+
+在「数据源管理」添加连接时选择「MySQL」，填写主机、查询端口（默认 `3306`）、账号和密码，默认库可留空。支持 MySQL 5.7、8.0 和 8.4，保存前会校验连接与实例类型。Doris 和 MariaDB 连接会被 MySQL 类型校验拒绝。MySQL 通过数据库连接直接采集状态，无需额外部署 exporter。
+
+仅接入 MySQL 时，在部署目录的 `.env` 中使用下面的最小配置，省略模板中的 `DORIS_*` 项，再按上文启动应用和访问入口。在页面添加首个 MySQL 数据源后开始采样。
+
+```dotenv
+STUDIO_MODE=live
+STUDIO_PORT=4173
+```
+
+已有部署按上文升级应用镜像后即可添加 MySQL。连接、监控历史及告警规则仍由 `doris-studio-monitoring` 数据卷保存，容器重启后恢复读取。MySQL 连接保存后会持续在服务端采样，应用重启后自动恢复；无需在浏览器选中该数据源或启用告警。默认 `.env` 配置和 `DORIS_FE_ENDPOINTS` 用于 Doris 数据源，MySQL 连接在页面单独添加。
+
+由 MySQL 管理员在数据库客户端执行以下建号语句。将 `STUDIO_SERVER_IP` 替换为 Studio 访问 MySQL 时使用的来源 IP，并将密码占位内容替换为实际随机密码。新账号具有连接权限，可读取 `SHOW GLOBAL STATUS` 与 `SHOW GLOBAL VARIABLES` 使用的实例计数器。MySQL 文档规定，这两条查询只要求能够登录服务器。 [SHOW STATUS](https://dev.mysql.com/doc/refman/8.4/en/show-status.html) · [SHOW VARIABLES](https://dev.mysql.com/doc/refman/8.4/en/show-variables.html)
+
+```sql
+CREATE USER 'studio_monitor'@'STUDIO_SERVER_IP'
+  IDENTIFIED BY 'REPLACE_WITH_STRONG_PASSWORD';
+```
+
+如果还要在页面浏览业务库、预览数据或运行查询，再对需要的库授权。把 `business_db` 替换为实际库名，也可将范围缩小到具体业务表。只采集实例计数器时，添加连接的默认库保持空白。
+
+```sql
+GRANT SELECT ON `business_db`.* TO 'studio_monitor'@'STUDIO_SERVER_IP';
+```
+
+MySQL 指标约每 30 秒采样。速率需要两轮连续样本，实例重启、计数器重置或采样中断时，对应区间留空。下列口径针对当前 MySQL 实例。 [MySQL 状态变量](https://dev.mysql.com/doc/refman/8.4/en/server-status-variables.html)
+
+| 指标 | 统计口径 |
+| --- | --- |
+| QPS | `Questions` 的增量除以采样秒数，包含客户端发出的语句和监控查询 |
+| TPS（显式提交 / 回滚命令） | `Com_commit + Com_rollback` 的增量除以采样秒数，统计显式提交和回滚命令，自提交事务使用其他统计口径 |
+| 连接数与连接使用率 | `Threads_connected`，以及它占 `max_connections` 的百分比 |
+| 活跃线程 | `Threads_running`，当前处于非休眠状态的线程数 |
+| 数据库网络收发 | `Bytes_received + Bytes_sent` 的合计增量除以采样秒数，单位为字节 / 秒 |
+| InnoDB 缓冲池命中率 | 由采样区间的 `Innodb_buffer_pool_reads` 和 `Innodb_buffer_pool_read_requests` 计算 |
+| 运行时长 | `Uptime`，单位为秒 |
+| 慢查询速率 | `Slow_queries` 的增量除以采样秒数，超过 MySQL `long_query_time` 的查询会计入该计数器 |
+
+表大小来自当前账号可见业务表（`BASE TABLE`）的 `information_schema.tables`，以 `DATA_LENGTH + INDEX_LENGTH` 汇总，排除 MySQL 系统库。InnoDB 的这些值属于容量估算，页面显示的范围随账号权限变化。主机 CPU、物理内存、文件系统总容量和磁盘使用率显示为不可用。 [元数据可见范围](https://dev.mysql.com/doc/refman/8.4/en/information-schema-introduction.html) · [TABLES 容量字段](https://dev.mysql.com/doc/refman/8.4/en/information-schema-tables-table.html)
+
 ## 飞书告警
 
 在「管理 → 告警配置」保存「全局飞书机器人」。填写目标群的自定义机器人 HTTPS Webhook，开启签名校验时同时填写密钥。保存后可点击发送测试消息。服务器需要能通过 HTTPS 访问 `open.feishu.cn:443`。若机器人启用了关键词，可以使用通知中包含的 `Doris Studio`。 [飞书自定义机器人](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN)
 
 每个数据源独立设置阈值、连续采样次数、冷却时间和恢复通知，所有数据源共用全局机器人。阈值留空会关闭相应规则。已启用告警的数据源在应用重启后自动开始采样。通知含数据源名称，已通知的告警在取得恢复样本后才会发送恢复消息。
+
+MySQL 数据源支持连接使用率、活跃线程、慢查询速率和可选 QPS 阈值，通知发送到同一个全局飞书机器人。仅监控实例计数器的账号也可启用这些告警。
 
 旧版数据源的机器人配置会继续使用，直到第一次保存全局配置。旧凭据一致时可在页面确认沿用，存在多个机器人时需填入统一地址。清除全局机器人会暂停飞书通知。
 
